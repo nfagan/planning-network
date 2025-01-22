@@ -15,7 +15,7 @@ class RNN(nn.Module):
   def make_h0(self, batch_size: int, device: torch.device):
     return torch.zeros((batch_size, self.hidden_size), device=device)
 
-  def forward(self, x: torch.tensor, h: torch.tensor):
+  def forward(self, x: torch.Tensor, h: torch.Tensor):
     """
     Inputs consisted of the current agent location sk, previous action a{k - 1}, reward r{k - 1}, 
     wall locations and the elapsed time t since the start of the episode (Methods)
@@ -39,7 +39,7 @@ class Policy(nn.Module):
     assert rnn_hidden_size > 0 and output_size > 0
     self.linear = nn.Linear(rnn_hidden_size, output_size)
 
-  def forward(self, y: torch.tensor):
+  def forward(self, y: torch.Tensor):
     """
     Note that we do not have a nonlinearity here because the output is interpreted to contain both a 
     policy and value function. In Kris' implementation, the softmax is computed later for the subset
@@ -59,7 +59,7 @@ class Prediction(nn.Module):
     self.linear0 = nn.Linear(input_size, output_size)
     self.linear1 = nn.Linear(output_size, output_size)
   
-  def forward(self, y: torch.tensor):
+  def forward(self, y: torch.Tensor):
     """
     Note that we do not have a final nonlinearity here because the output is (may be) interpreted 
     elsewhere as a distribution over states

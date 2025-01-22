@@ -5,9 +5,9 @@ import torch
 import torch.nn.functional as F
 from dataclasses import dataclass
 from typing import List
+
 """
 Use batch as first dimension.
-
 * act in environment
   . planning algorithm
 * training
@@ -17,17 +17,62 @@ Use batch as first dimension.
 @dataclass
 class Meta:
   num_actions: int
+  num_concrete_actions: int # excludes planning action
   batch_size: int
   num_inputs: int
+  num_planning_inputs: int
+  num_planning_outputs: int
   num_outputs: int
   num_states: int
   plan_len: int
+  planning_action = 4
+  device: torch.device
 
-def model_tree_search(*, meta: Meta, model: AgentModel, h0: torch.tensor):
-  for _ in range(meta.plan_len):
-    h, log_pi, v, pred_output, a = forward_agent_model(meta=meta, model=model)
+def sample_actions(ps: torch.Tensor): return torch.multinomial(ps, 1, True).squeeze()
 
-def forward_agent_model(*, meta: Meta, model: AgentModel, x: torch.tensor, h0: torch.tensor):
+def make_meta(*, arena_len: int, batch_size: int, plan_len: int, device: torch.device) -> Meta:
+  """
+  walls_build.jl/useful_dimensions:
+  Nstates = Larena^2 #number of states in arena
+  Nstate_rep = 2 #dimensionality of the state representation (e.g. '2' for x,y-coordinates)
+  Naction = 5 #number of actions available
+  Nout = Naction + 1 + Nstates #actions and value function and prediction of state
+  Nout += 1 # needed for backward compatibility (this lives between state and reward predictions)
+  Nwall_in = 2 * Nstates #provide full info
+  Nin = Naction + 1 + 1 + Nstates + Nwall_in #5 actions, 1 rew, 1 time, L^2 states, some walls
+
+  --- planning.jl/build_planner
+  Nplan_in = 4*Lplan+1 #action sequence and whether we ended at the reward location
+  Nplan_out = Nstates #rew location
+  ---
+
+  Nin += planner.Nplan_in #additional inputs from planning
+  Nout += planner.Nplan_out #additional outputs for planning
+  """
+  num_actions = 5
+  num_concrete_actions = 4  # movements; excludes planning action
+  num_states = arena_len * arena_len
+  num_walls = 2 * num_states
+  num_inputs = num_actions + 1 + 1 + num_states + num_walls # + 1 rew, + 1 time
+  num_outputs = num_actions + 1 + num_states
+
+  # (one-hot) action sequence and whether we ended at the reward location
+  num_planning_inputs = 4 * plan_len + 1
+  # (imagined) reward location
+  num_planning_outputs = num_states 
+
+  num_inputs += num_planning_inputs
+  num_outputs += num_planning_outputs
+
+  return Meta(
+    num_inputs=num_inputs, num_outputs=num_outputs, 
+    num_actions=num_actions, num_states=num_states, 
+    batch_size=batch_size, plan_len=plan_len, 
+    num_concrete_actions=num_concrete_actions, 
+    num_planning_inputs=num_planning_inputs, num_planning_outputs=num_planning_outputs,
+    device=device)
+
+def forward_agent_model(*, meta: Meta, model: AgentModel, x: torch.Tensor, h0: torch.Tensor):
   """
   a2c.jl/forward_modular
   h_rnn, ytemp = mod.network[GRUind].cell(h_rnn, x) #forward pass through recurrent part of RNN
@@ -39,9 +84,8 @@ def forward_agent_model(*, meta: Meta, model: AgentModel, x: torch.tensor, h0: t
   prediction_output = mod.prediction(prediction_input) #output of prediction module
   return h_rnn, [logπ; V; prediction_output], a # return hidden state, network output, and sampled action
   """
-  def _policy_subset(log_pi_v): return log_pi_v[:, :5]
-  def _v_subset(log_pi_v): return log_pi_v[:, 5]
-  def sample_actions(ps): return torch.multinomial(ps, 1, True).squeeze()
+  def _policy_subset(log_pi_v): return log_pi_v[:, :meta.num_actions]
+  def _v_subset(log_pi_v): return log_pi_v[:, meta.num_actions]
 
   h_rnn, ytemp = model.rnn(x, h0)
   log_pi_v = model.policy(ytemp)
@@ -54,9 +98,16 @@ def forward_agent_model(*, meta: Meta, model: AgentModel, x: torch.tensor, h0: t
   pred_output = model.prediction(pred_input)
   return h_rnn, log_pi, v, pred_output, a
 
+def gen_plan_input(*, meta: Meta, path_hot: torch.Tensor):
+  x = torch.zeros((path_hot.shape[0], meta.num_planning_inputs))
+  # @TODO: found reward input should be after the path
+  x[:, :meta.num_planning_inputs-1] = path_hot
+  return x
+
 def gen_input(
-    *, meta: Meta, arenas: List[env.Arena], prev_ahot: torch.tensor, 
-    prev_rewards: torch.tensor, time: torch.tensor, shot: torch.tensor):
+    *, meta: Meta, arenas: List[env.Arena], prev_ahot: torch.Tensor, 
+    prev_rewards: torch.Tensor, time: torch.Tensor, shot: torch.Tensor, 
+    plan_input: torch.Tensor = None):
   """
   walls.jl/gen_input:
   ### speed this up ###
@@ -80,46 +131,56 @@ def gen_input(
   end
   """
   walls = torch.vstack([torch.tensor(x.walls[:, :, [0, 2]].flatten()) for x in arenas])
-  x = torch.zeros((meta.batch_size, meta.num_inputs))
+  x = torch.zeros((len(arenas), meta.num_inputs))
   x[:, :meta.num_actions] = prev_ahot
   x[:, meta.num_actions:meta.num_actions+1] = prev_rewards
   x[:, meta.num_actions+1:meta.num_actions+2] = time
   x[:, meta.num_actions+2:meta.num_actions+2+meta.num_states] = shot
   x[:, meta.num_actions+2+meta.num_states:meta.num_actions+2+meta.num_states+meta.num_states*2] = walls
-  # @TODO: Planning inputs
+  if plan_input is not None:
+    x[:, meta.num_actions+2+meta.num_states+meta.num_states*2:] = plan_input
   return x
 
-def meta_sizes(*, arena_len: int, batch_size: int, plan_len: int) -> Meta:
-  """
-  walls_build.jl/useful_dimensions:
-  Nstates = Larena^2 #number of states in arena
-  Nstate_rep = 2 #dimensionality of the state representation (e.g. '2' for x,y-coordinates)
-  Naction = 5 #number of actions available
-  Nout = Naction + 1 + Nstates #actions and value function and prediction of state
-  Nout += 1 # needed for backward compatibility (this lives between state and reward predictions)
-  Nwall_in = 2 * Nstates #provide full info
-  Nin = Naction + 1 + 1 + Nstates + Nwall_in #5 actions, 1 rew, 1 time, L^2 states, some walls
+def model_tree_search(
+    *, meta: Meta, model: AgentModel, arenas: List[env.Arena], 
+    h_rnn: torch.Tensor, s: torch.Tensor, a: torch.Tensor, 
+    rewards: torch.Tensor, time: torch.Tensor):
+  # 
+  batch_size = len(arenas)
+  path = torch.zeros((batch_size, meta.plan_len), dtype=torch.long)
 
-  --- planning.jl/build_planner
-  Nplan_in = 4*Lplan+1 #action sequence and whether we ended at the reward location
-  Nplan_out = Nstates #rew location
-  ---
+  # for the first planning iteration, the policy derives from the rnn's current hidden state;
+  # afterwards, the policy derives from the rnn's output.
+  ytemp = h_rnn
+  for pi in range(meta.plan_len):
+    if pi > 0:
+      shot = F.one_hot(s, meta.num_states)
+      ahot = F.one_hot(a, meta.num_actions)
+      x = gen_input(
+        meta=meta, arenas=arenas, prev_ahot=ahot, 
+        prev_rewards=rewards, time=time, shot=shot)
+      h_rnn, ytemp = model.rnn(x, h_rnn)
 
-  Nin += planner.Nplan_in #additional inputs from planning
-  Nout += planner.Nplan_out #additional outputs for planning
-  """
-  num_actions = 5
-  num_states = arena_len * arena_len
-  num_walls = 2 * num_states
-  num_inputs = num_actions + 1 + 1 + num_states + num_walls # + 1 rew, + 1 time
-  num_outputs = num_actions + 1 + num_states
+    log_pi_v = model.policy(ytemp)
+    # ignore thinking action
+    log_pi = log_pi_v[:, :meta.num_concrete_actions]
+    # sample next actions
+    ps = torch.softmax(log_pi, dim=1)
+    a = sample_actions(ps)
+    ah = F.one_hot(a, meta.num_actions)
 
-  num_inputs += 4 * plan_len + 1 #action sequence and whether we ended at the reward location
-  num_outputs += num_states #(imagined) rew location
+    # record chosen actions
+    for b in range(batch_size):
+      path[b, pi] = a[b]
 
-  return Meta(
-    num_inputs=num_inputs, num_outputs=num_outputs, 
-    num_actions=num_actions, num_states=num_states, batch_size=batch_size)
+    # predict and sample new states
+    pred_input = torch.hstack([ytemp, ah])
+    pred_output = model.prediction(pred_input)
+    sn = torch.softmax(pred_output[:, :meta.num_states], dim=1)
+    s = torch.argmax(sn, dim=1)
+    time = time + 1.
+
+  return path
 
 def build_model(*, meta: Meta) -> AgentModel:
   hs = 100
@@ -133,33 +194,61 @@ def build_model(*, meta: Meta) -> AgentModel:
   prediction = Prediction(input_size=hs + num_actions, output_size=pred_output_size)
   return AgentModel(rnn=rnn, policy=policy, prediction=prediction)
 
-def main():
-  s = 4
-  batch_size = 128
-  device = torch.device('cpu')
-  mazes = [env.build_maze_arena(s) for _ in range(batch_size)]
-  meta = meta_sizes(arena_len=s, batch_size=batch_size, plan_len=8)
-  model = build_model(meta=meta)
-  prev_ahot = torch.zeros((meta.batch_size, meta.num_actions))
+def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]):
+  a = torch.randint(0, meta.num_actions, (meta.batch_size,))
+  s = torch.randint(0, meta.num_states, (meta.batch_size,))
   prev_rewards = torch.zeros((meta.batch_size, 1))
   time = torch.zeros((meta.batch_size, 1))
-  s0 = torch.randint(0, meta.num_states, (meta.batch_size,))
-  shot = F.one_hot(s0, meta.num_states)
-  x = gen_input(
-    meta=meta, arenas=mazes, prev_ahot=prev_ahot, 
-    prev_rewards=prev_rewards, shot=shot, time=time)
-  h0 = model.rnn.make_h0(meta.batch_size, device)
-  h_rnn, log_pi, v, pred_output, a1 = forward_agent_model(meta=meta, model=model, x=x, h0=h0)
-  # 
-  s1 = torch.zeros_like(s0).detach()
-  for i in range(batch_size):
-    a = a1[i].item()
-    if a < 4: 
-      s1[i] = env.move_agent(s0[i].item(), a, mazes[i])
-    else:
-      # do planning
-      pass
+  h_rnn = model.rnn.make_h0(meta.batch_size, meta.device)
+
+  loss = 0.0
+  for t in range(20):
+    plan_input = None
+    if t > 0: plan_input = gen_plan_input(meta=meta, path_hot=paths_hot)
+
+    prev_ahot = F.one_hot(a, meta.num_actions)
+    shot = F.one_hot(s, meta.num_states)
+
+    # perform a step of recurrent processing
+    x = gen_input(
+      meta=meta, arenas=mazes, prev_ahot=prev_ahot, 
+      prev_rewards=prev_rewards, shot=shot, time=time, plan_input=plan_input)
+    h_rnn, log_pi, v, pred_output, a1 = forward_agent_model(meta=meta, model=model, x=x, h0=h_rnn)
+    # pred_state, pred_reward = from_prediction_output(pred_output)
+
+    # update agent states
+    s1 = torch.zeros_like(s).detach()
+    for i in range(meta.batch_size):
+      act = a1[i].item()
+      if act < meta.planning_action: s1[i] = env.move_agent(s[i].item(), act, mazes[i])
+
+    # plan
+    pi = torch.argwhere(a1 == meta.planning_action).squeeze() # indices of planning actions
+    path = model_tree_search(
+      meta=meta, model=model, arenas=[mazes[i] for i in pi], 
+      h_rnn=h_rnn[pi, :], s=s[pi], a=a[pi], rewards=prev_rewards[pi, :], time=time[pi, :])
+    paths_hot = torch.zeros((meta.batch_size, path.shape[1] * meta.num_concrete_actions))
+    paths_hot[pi, :] = F.one_hot(path, meta.num_concrete_actions).flatten(1).type(paths_hot.dtype)
+    
+    # prepare next iteration
+    a = a1
+    s = s1
+    # prev_rewards = ...
+    time = time + 1.
+
+    # update losses
   import pdb; pdb.set_trace()
+
+def main():
+  s = 4 # arena side length
+  batch_size = 128
+  device = torch.device('cpu')
+
+  meta = make_meta(arena_len=s, batch_size=batch_size, plan_len=8, device=device)
+  model = build_model(meta=meta)
+  mazes = [env.build_maze_arena(s) for _ in range(meta.batch_size)]
+  
+  run_episode(meta, model, mazes)
 
 if __name__ == '__main__':
   main()
