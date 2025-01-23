@@ -66,8 +66,9 @@ class Prediction(nn.Module):
     """
     return self.linear1(torch.relu(self.linear0(y))) 
 
-class AgentModel(object):
+class AgentModel(nn.Module):
   def __init__(self, *, rnn: RNN, policy: Policy, prediction: Prediction):
+    super().__init__()
     self.rnn = rnn
     self.policy = policy
     self.prediction = prediction
