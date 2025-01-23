@@ -27,7 +27,7 @@ class RNN(nn.Module):
     xh, xw = x.shape[0], x.shape[1]
     hh, hw = h.shape[0], h.shape[1]
     y, h1 = self.gru(x.reshape(xh, 1, xw), h.reshape(1, hh, hw))
-    return y.squeeze(), h1.squeeze()
+    return y.squeeze(1), h1.squeeze(0)
 
 class Policy(nn.Module):
   def __init__(self, *, rnn_hidden_size: int, output_size: int):

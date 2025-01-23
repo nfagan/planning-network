@@ -29,7 +29,9 @@ class Meta:
   planning_action = 4
   device: torch.device
 
-def sample_actions(ps: torch.Tensor): return torch.multinomial(ps, 1, True).squeeze()
+def sample_actions(ps: torch.Tensor): 
+  r = torch.multinomial(ps, 1, True)
+  return r.squeeze(1)
 
 def make_meta(*, arena_len: int, batch_size: int, plan_len: int, device: torch.device) -> Meta:
   """
@@ -203,12 +205,12 @@ def decompose_prediction_output(meta: Meta, pred_output: torch.Tensor):
 def state_prediction_loss(true_s: torch.Tensor, pred_s: torch.Tensor):
   logits = pred_s.permute(0, 2, 1).flatten(0, 1)
   targets = true_s.flatten()
-  return F.cross_entropy(logits, targets)
+  return F.cross_entropy(logits, targets, reduction='sum')
 
 def reward_prediction_loss(true_rew_s: torch.Tensor, pred_r: torch.Tensor):
   logits = pred_r.permute(0, 2, 1).flatten(0, 1)
   targets = true_rew_s.flatten()
-  return F.cross_entropy(logits, targets)
+  return F.cross_entropy(logits, targets, reduction='sum')
 
 def td_error(rews: torch.Tensor, v: torch.Tensor):
   N = rews.shape[1]
@@ -247,6 +249,7 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]):
   planning_action_time = 0.12   # @TODO
 
   t = 0
+  p_plan = d_plan = 0.0
   while torch.any(time < T):
     plan_input = None
     if t > 0: plan_input = gen_plan_input(meta=meta, path_hot=paths_hot)
@@ -278,14 +281,16 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]):
       s1[i] = sn
 
     # plan
-    pi = torch.argwhere(a1 == meta.planning_action).squeeze() # indices of planning actions
-    with torch.no_grad():
-      path = rollout(
-        meta=meta, model=model, arenas=[mazes[i] for i in pi],
-        h_rnn=h_rnn[pi, :], s=s[pi], a=a[pi], 
-        rewards=prev_rewards[pi, :], time=time[pi, :])
-    paths_hot = torch.zeros((meta.batch_size, path.shape[1] * meta.num_concrete_actions))
-    paths_hot[pi, :] = F.one_hot(path, meta.num_concrete_actions).flatten(1).type(paths_hot.dtype)
+    paths_hot = torch.zeros((meta.batch_size, meta.plan_len * meta.num_concrete_actions))
+    pi = torch.argwhere(a1 == meta.planning_action).squeeze(1) # indices of planning actions
+    if pi.numel() > 0:
+      with torch.no_grad():
+        path = rollout(
+          meta=meta, model=model, arenas=[mazes[i] for i in pi], s=s[pi], a=a[pi], 
+          h_rnn=h_rnn[pi, :], rewards=prev_rewards[pi, :], time=time[pi, :])
+      paths_hot[pi, :] = F.one_hot(path, meta.num_concrete_actions).flatten(1).type(paths_hot.dtype)
+    p_plan += pi.numel()
+    d_plan += meta.batch_size # @TODO: + num_active
 
     # increment time
     dt = torch.ones_like(time) * concrete_action_time
@@ -331,37 +336,51 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]):
   # L /= batch #normalize by batch
   # ------------
 
-  beta_v = 0.05 # value function weight
-  beta_r = 1.   # reward prediction weight
+  #  jl: βp: 0.5 | βe: 0.05 | βv: 0.05 | βr: 1.0
   beta_p = 0.5  # predictive weight  
   beta_e = 0.05 # prior weight
+  beta_v = 0.05 # value function weight
+  beta_r = 1.   # reward prediction weight
   active = 1. # @TODO
 
-  L = torch.tensor(0.0, device=meta.device)
+  L_vt = torch.tensor(0.0, device=meta.device)
+  L_rpe = torch.tensor(0.0, device=meta.device)
+  L_pred = torch.tensor(0.0, device=meta.device)
+
   ds = td_error(rews, vs)
   N = ds.shape[1]
   for t in range(N):
     vt = ds[:, t] * vs[:, t] # value function (batch)
-    vt_term = torch.sum(beta_v * vt * active)
-    L -= vt_term
+    vt_term = torch.sum(vt * active)
+    L_vt -= vt_term
 
     # td errors weighted by logits of selected actions
     lp = torch.tensor([log_pis[i, actions[i, t], t] for i in range(log_pis.shape[0])]).to(meta.device)
     rpe_term = ds[:, t] * lp
-    L -= torch.sum(beta_r * rpe_term)
+    L_rpe -= torch.sum(rpe_term)
 
   # ------------
   state_pred_loss = state_prediction_loss(s0s, pred_states)
   reward_pred_loss = reward_prediction_loss(true_rew_locs, pred_rewards)
-  L += (state_pred_loss + reward_pred_loss) * beta_p
+  L_pred += state_pred_loss + reward_pred_loss
   # ------------
+
+  """
+  jl: pred: 6203.166 | prior: -5.09006 | val: 8.010938 | rpe: -238.36337
+  py: pred: 7123.762 | prior: ... | val: -14.416 | rpe: -45.529
+  """
+  # print(f'pred: {(L_pred*beta_p).item():.3f} | prior: ... | val: {(L_vt*beta_v).item():.3f} | rpe: {(L_rpe*beta_r).item():.3f}')
+
+  L = L_vt * beta_v + L_rpe * beta_r + L_pred * beta_p
+
+  print(f'Loss: {L.item()} | p(plan): {(p_plan/d_plan):.3f}')
 
   return L
 
 def main():
   s = 4 # arena side length
-  batch_size = 128
-  num_episodes = 40
+  batch_size = 40
+  num_episodes = 1000
   device = torch.device('cpu')
 
   meta = make_meta(arena_len=s, batch_size=batch_size, plan_len=8, device=device)
@@ -371,11 +390,11 @@ def main():
   optim = torch.optim.Adam(lr=1e-3, params=model.parameters())
 
   for e in range(num_episodes):
+    print(f'{e+1} of {num_episodes}')
     loss = run_episode(meta, model, mazes)
     optim.zero_grad()
     loss.backward()
     optim.step()
-    print(f'Loss: {loss.item()} | {e+1} of {num_episodes}')
 
 if __name__ == '__main__':
   main()
