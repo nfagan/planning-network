@@ -9,10 +9,6 @@ from typing import List
 
 """
 Use batch as first dimension.
-* act in environment
-  . planning algorithm
-* training
-  . losses
 """
 
 @dataclass
@@ -101,10 +97,10 @@ def forward_agent_model(*, meta: Meta, model: AgentModel, x: torch.Tensor, h0: t
   pred_output = model.prediction(pred_input)
   return h_rnn, log_pi, v, pred_output, a
 
-def gen_plan_input(*, meta: Meta, path_hot: torch.Tensor):
+def gen_plan_input(*, meta: Meta, path_hot: torch.Tensor, found_reward: torch.Tensor):
   x = torch.zeros((path_hot.shape[0], meta.num_planning_inputs))
-  # @TODO: found reward input should be after the path
   x[:, :meta.num_planning_inputs-1] = path_hot
+  x[:, meta.num_planning_inputs-1] = found_reward
   return x
 
 def gen_input(
@@ -146,16 +142,23 @@ def gen_input(
 
 def rollout(
     *, meta: Meta, model: AgentModel, arenas: List[env.Arena], 
-    h_rnn: torch.Tensor, s: torch.Tensor, a: torch.Tensor, 
+    h_rnn: torch.Tensor, s: torch.Tensor, a: torch.Tensor, goal_s: torch.Tensor,
     rewards: torch.Tensor, time: torch.Tensor):
   # 
   batch_size = len(arenas)
-  path = torch.zeros((batch_size, meta.plan_len), dtype=torch.long)
+
+  path = torch.zeros((batch_size, meta.plan_len), dtype=torch.long, device=meta.device)
+  found_rew = torch.zeros((batch_size,), device=meta.device)
+
+  # remaining indices of rollouts that haven't yet reached the goal state.
+  rmi = torch.arange(0, batch_size, device=meta.device)
 
   # for the first planning iteration, the policy derives from the rnn's current hidden state;
   # afterwards, the policy derives from the rnn's output.
   ytemp = h_rnn
   for pi in range(meta.plan_len):
+    if rmi.numel() == 0: break
+
     if pi > 0:
       shot = F.one_hot(s, meta.num_states)
       ahot = F.one_hot(a, meta.num_actions)
@@ -173,17 +176,21 @@ def rollout(
     ah = F.one_hot(a, meta.num_actions)
 
     # record chosen actions
-    for b in range(batch_size):
+    for b in rmi:
       path[b, pi] = a[b]
 
     # predict and sample new states
-    pred_input = torch.hstack([ytemp, ah])
-    pred_output = model.prediction(pred_input)
-    sn = torch.softmax(pred_output[:, :meta.num_states], dim=1)
-    s = torch.argmax(sn, dim=1)
+    pred_output = model.prediction(torch.hstack([ytemp, ah]))
+    s = torch.argmax(torch.softmax(pred_output[:, :meta.num_states], dim=1), dim=1)
+
+    # check whether we reached the goal, and only consider remaining (non-goal-reached) rollouts
+    gr = torch.argwhere(s == goal_s).squeeze(1)
+    rmi = torch.tensor([x for x in rmi if x not in gr], device=meta.device)
+    found_rew[gr] = 1
+
     time = time + 1.
 
-  return path
+  return path, found_rew
 
 def build_model(*, meta: Meta) -> AgentModel:
   hs = 100
@@ -196,6 +203,9 @@ def build_model(*, meta: Meta) -> AgentModel:
   policy = Policy(rnn_hidden_size=hs, output_size=policy_output_size)
   prediction = Prediction(input_size=hs + num_actions, output_size=pred_output_size)
   return AgentModel(rnn=rnn, policy=policy, prediction=prediction)
+
+def predicted_goal_states(pred_r: torch.Tensor):
+  return torch.argmax(torch.softmax(pred_r, dim=1), dim=1)
 
 def decompose_prediction_output(meta: Meta, pred_output: torch.Tensor):
   pred_s = pred_output[:, :meta.num_states]
@@ -223,8 +233,6 @@ def td_error(rews: torch.Tensor, v: torch.Tensor):
 
 def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]):
   """
-  "Additionally, the time within the session was updated by only 120 ms after a rollout in contrast 
-  to the 400-ms update after a physical action or teleportation step"
   """
   a = torch.randint(0, meta.num_actions, (meta.batch_size,)).to(meta.device)
   s = torch.randint(0, meta.num_states, (meta.batch_size,)).to(meta.device)
@@ -252,7 +260,7 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]):
   p_plan = d_plan = 0.0
   while torch.any(time < T):
     plan_input = None
-    if t > 0: plan_input = gen_plan_input(meta=meta, path_hot=paths_hot)
+    if t > 0: plan_input = gen_plan_input(meta=meta, path_hot=paths_hot, found_reward=plan_found_reward)
 
     prev_ahot = F.one_hot(a, meta.num_actions)
     shot = F.one_hot(s, meta.num_states)
@@ -281,14 +289,18 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]):
       s1[i] = sn
 
     # plan
-    paths_hot = torch.zeros((meta.batch_size, meta.plan_len * meta.num_concrete_actions))
+    paths_hot = torch.zeros((meta.batch_size, meta.plan_len * meta.num_concrete_actions)).to(meta.device)
+    plan_found_reward = torch.zeros((meta.batch_size,)).to(meta.device)
     pi = torch.argwhere(a1 == meta.planning_action).squeeze(1) # indices of planning actions
     if pi.numel() > 0:
       with torch.no_grad():
-        path = rollout(
+        path, found_rew = rollout(
           meta=meta, model=model, arenas=[mazes[i] for i in pi], s=s[pi], a=a[pi], 
+          goal_s=predicted_goal_states(pred_reward)[pi],
           h_rnn=h_rnn[pi, :], rewards=prev_rewards[pi, :], time=time[pi, :])
-      paths_hot[pi, :] = F.one_hot(path, meta.num_concrete_actions).flatten(1).type(paths_hot.dtype)
+      paths_hot[pi, :] = F.one_hot(
+        path, meta.num_concrete_actions).flatten(1).type(paths_hot.dtype).to(meta.device)
+      plan_found_reward[pi] = found_rew
     p_plan += pi.numel()
     d_plan += meta.batch_size # @TODO: + num_active
 
@@ -380,7 +392,7 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]):
 def main():
   s = 4 # arena side length
   batch_size = 40
-  num_episodes = 1000
+  num_episodes = 10000
   device = torch.device('cpu')
 
   meta = make_meta(arena_len=s, batch_size=batch_size, plan_len=8, device=device)
