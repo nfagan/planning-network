@@ -8,9 +8,11 @@ from dataclasses import dataclass
 from typing import List
 from time import time as time_fn
 
-"""
-Use batch as first dimension.
-"""
+# ----------------------------------------------------------------------------
+
+@dataclass
+class EpisodeResult:
+  loss: torch.Tensor
 
 @dataclass
 class Meta:
@@ -25,6 +27,46 @@ class Meta:
   plan_len: int
   planning_action = 4
   device: torch.device
+  # ----
+  T = 20.0 # time in trial
+  concrete_action_time = 0.4
+  planning_action_time = 0.12
+  # ----
+  #  jl: βp: 0.5 | βe: 0.05 | βv: 0.05 | βr: 1.0
+  beta_p = 0.5  # predictive weight
+  # beta_e = 0.05 # prior weight
+  beta_e = 0.00 # prior weight
+  beta_v = 0.05 # value function weight
+  beta_r = 1.   # reward prediction weight
+
+# ----------------------------------------------------------------------------
+
+def predicted_goal_states(pred_r: torch.Tensor):
+  return torch.argmax(torch.softmax(pred_r, dim=1), dim=1)
+
+def decompose_prediction_output(meta: Meta, pred_output: torch.Tensor):
+  pred_s = pred_output[:, :meta.num_states]
+  pred_r = pred_output[:, meta.num_states:]
+  return pred_s, pred_r
+
+def state_prediction_loss(true_s: torch.Tensor, pred_s: torch.Tensor):
+  logits = pred_s.permute(0, 2, 1).flatten(0, 1)
+  targets = true_s.flatten()
+  return F.cross_entropy(logits, targets, reduction='sum')
+
+def reward_prediction_loss(true_rew_s: torch.Tensor, pred_r: torch.Tensor):
+  logits = pred_r.permute(0, 2, 1).flatten(0, 1)
+  targets = true_rew_s.flatten()
+  return F.cross_entropy(logits, targets, reduction='sum')
+
+def td_error(rews: torch.Tensor, v: torch.Tensor):
+  N = rews.shape[1]
+  r = torch.zeros((rews.shape[0],), device=v.device)
+  ds = torch.zeros_like(v)
+  for t in range(N):
+    r = rews[:, N - t - 1] + r
+    ds[:, N - t - 1] = r - v[:, N - t - 1]
+  return ds
 
 def sample_actions(ps: torch.Tensor): 
   r = torch.multinomial(ps, 1, True)
@@ -43,22 +85,8 @@ def prior_loss(meta: Meta, log_pi: torch.Tensor, active: torch.Tensor):
 
 def make_meta(*, arena_len: int, batch_size: int, plan_len: int, device: torch.device) -> Meta:
   """
-  walls_build.jl/useful_dimensions:
-  Nstates = Larena^2 #number of states in arena
-  Nstate_rep = 2 #dimensionality of the state representation (e.g. '2' for x,y-coordinates)
-  Naction = 5 #number of actions available
-  Nout = Naction + 1 + Nstates #actions and value function and prediction of state
-  Nout += 1 # needed for backward compatibility (this lives between state and reward predictions)
-  Nwall_in = 2 * Nstates #provide full info
-  Nin = Naction + 1 + 1 + Nstates + Nwall_in #5 actions, 1 rew, 1 time, L^2 states, some walls
-
-  --- planning.jl/build_planner
-  Nplan_in = 4*Lplan+1 #action sequence and whether we ended at the reward location
-  Nplan_out = Nstates #rew location
-  ---
-
-  Nin += planner.Nplan_in #additional inputs from planning
-  Nout += planner.Nplan_out #additional outputs for planning
+  walls_build.jl/useful_dimensions
+  planning.jl/build_planner
   """
   num_actions = 5
   num_concrete_actions = 4  # movements; excludes planning action
@@ -86,14 +114,6 @@ def make_meta(*, arena_len: int, batch_size: int, plan_len: int, device: torch.d
 def forward_agent_model(*, meta: Meta, model: AgentModel, x: torch.Tensor, h0: torch.Tensor):
   """
   a2c.jl/forward_modular
-  h_rnn, ytemp = mod.network[GRUind].cell(h_rnn, x) #forward pass through recurrent part of RNN
-  logπ_V = mod.policy(ytemp) #apply policy (and value) network
-  logπ = logπ_V[1:Naction, :] #policy is the first few rows
-  V = logπ_V[(Naction+1):(Naction+1), :] #value function is the next row
-  ...
-  prediction_input = [ytemp; ahot] #input to prediction module (concatenation of hidden state and action)
-  prediction_output = mod.prediction(prediction_input) #output of prediction module
-  return h_rnn, [logπ; V; prediction_output], a # return hidden state, network output, and sampled action
   """
   def _policy_subset(log_pi_v): return log_pi_v[:, :meta.num_actions]
   def _v_subset(log_pi_v): return log_pi_v[:, meta.num_actions]
@@ -120,26 +140,7 @@ def gen_input(
     prev_rewards: torch.Tensor, time: torch.Tensor, shot: torch.Tensor, 
     plan_input: torch.Tensor = None):
   """
-  walls.jl/gen_input:
-  ### speed this up ###
-  x = zeros(Nin, batch)
-  x[1:Naction, :] = ahot
-  x[Naction + 1, :] = rew[:]
-  x[Naction + 2, :] = world_state.environment_state.time / 50f0 #smaller time input in [0,1]
-  x[(Naction + 3):(Naction + 2 + Nstates), :] = shot
-  x[(Naction + 2 + Nstates + 1):(Naction + 2 + Nstates + Nwall_in), :] = wall_input
-
-  if length(plan_input) > 0 #set planning input
-      x[(Naction + 2 + Nstates + Nwall_in + 1):(Naction + 2 + Nstates + Nwall_in + Nplan_in), :] = 
-        world_state.planning_state.plan_input
-  end
-
-  function get_wall_input(state, wall_loc)
-    #state is 2xB
-    #wall_loc is Nstates x 4 x B (4 is right/left/up/down)
-    input = [wall_loc[:, 1, :]; wall_loc[:, 3, :]] #all horizontal and all vertical walls
-    return input # don't take gradients of this
-  end
+  walls.jl/gen_input, get_wall_input
   """
   walls = torch.vstack(
     [torch.tensor(x.walls[:, :, [0, 2]].flatten(), device=meta.device) for x in arenas])
@@ -158,6 +159,7 @@ def rollout(
     h_rnn: torch.Tensor, s: torch.Tensor, a: torch.Tensor, goal_s: torch.Tensor,
     rewards: torch.Tensor, time: torch.Tensor):
   """
+  model_planner.jl/model_tree_search
   """
   batch_size = len(arenas)
 
@@ -216,36 +218,32 @@ def build_model(*, meta: Meta, hidden_size=100) -> AgentModel:
   prediction = Prediction(input_size=hs + num_actions, output_size=pred_output_size)
   return AgentModel(rnn=rnn, policy=policy, prediction=prediction).to(meta.device)
 
-def predicted_goal_states(pred_r: torch.Tensor):
-  return torch.argmax(torch.softmax(pred_r, dim=1), dim=1)
-
-def decompose_prediction_output(meta: Meta, pred_output: torch.Tensor):
-  pred_s = pred_output[:, :meta.num_states]
-  pred_r = pred_output[:, meta.num_states:]
-  return pred_s, pred_r
-
-def state_prediction_loss(true_s: torch.Tensor, pred_s: torch.Tensor):
-  logits = pred_s.permute(0, 2, 1).flatten(0, 1)
-  targets = true_s.flatten()
-  return F.cross_entropy(logits, targets, reduction='sum')
-
-def reward_prediction_loss(true_rew_s: torch.Tensor, pred_r: torch.Tensor):
-  logits = pred_r.permute(0, 2, 1).flatten(0, 1)
-  targets = true_rew_s.flatten()
-  return F.cross_entropy(logits, targets, reduction='sum')
-
-def td_error(rews: torch.Tensor, v: torch.Tensor):
-  N = rews.shape[1]
-  r = torch.zeros((rews.shape[0],), device=v.device)
-  ds = torch.zeros_like(v)
-  for t in range(N):
-    r = rews[:, N - t - 1] + r
-    ds[:, N - t - 1] = r - v[:, N - t - 1]
-  return ds
-
-def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]):
+def act_concretely(
+  meta: Meta, mazes: List[env.Arena], s: torch.Tensor, a1: torch.Tensor, rew_loc: torch.Tensor):
   """
+  Move the agent in the environment, if its chosen action is not the planning action, and receive
+  reward if the goal state is reached.
   """
+  s1 = torch.zeros_like(s)
+  rew = torch.zeros((len(mazes), 1)).to(meta.device)
+
+  for i in range(len(mazes)):
+    act = a1[i].item()
+    if act == meta.planning_action: continue
+    # perform a concrete action (a movement)
+    sn = env.move_agent(s[i].item(), act, mazes[i])
+    if sn == rew_loc[i]:  # reached the goal
+      # teleport the agent
+      # @TODO: to a *non-goal state*
+      sn = torch.randint(0, meta.num_states, (1,))
+      # update reward
+      rew[i, 0] = 1.
+    s1[i] = sn
+  return s1, rew
+
+def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]) -> EpisodeResult:
+  assert meta.batch_size == len(mazes)
+
   wall_clock_t0 = time_fn()
 
   a = torch.randint(0, meta.num_actions, (meta.batch_size,)).to(meta.device)
@@ -267,18 +265,14 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]):
   pred_rewards = []
   actives = []
 
-  T = 20.0 # @TODO
-  concrete_action_time = 0.4    # @TODO
-  planning_action_time = 0.12   # @TODO
-
   t = 0
   n_plan = d_plan = 0.0
-  while torch.any(time < T):
+  while torch.any(time < meta.T):
     plan_input = None
     if t > 0: plan_input = gen_plan_input(meta=meta, path_hot=paths_hot, found_reward=plan_found_reward)
 
     # examples that haven't yet exceeded the time limit
-    is_active = time < T
+    is_active = time < meta.T
 
     prev_ahot = F.one_hot(a, meta.num_actions)
     shot = F.one_hot(s, meta.num_states)
@@ -290,23 +284,10 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]):
     h_rnn, log_pi, v, pred_output, a1 = forward_agent_model(meta=meta, model=model, x=x, h0=h_rnn)
     pred_state, pred_reward = decompose_prediction_output(meta, pred_output)
 
-    # update agent states
-    s1 = torch.zeros_like(s)
-    rew = torch.zeros_like(prev_rewards)
+    # update the agent's state, when the chosen action is concrete
+    s1, rew = act_concretely(meta, mazes, s, a1, rew_loc)
 
-    for i in range(meta.batch_size):
-      act = a1[i].item()
-      if act == meta.planning_action: continue
-      # perform a concrete action (a movement)
-      sn = env.move_agent(s[i].item(), act, mazes[i])
-      if sn == rew_loc[i]:  # reached the goal
-        # teleport the agent to a *non-goal state* (@TODO)
-        sn = torch.randint(0, meta.num_states, (1,))
-        # update reward
-        rew[i, 0] = 1.
-      s1[i] = sn
-
-    # plan
+    # implement rollouts, when the chosen action is to plan
     paths_hot = torch.zeros((meta.batch_size, meta.plan_len * meta.num_concrete_actions)).to(meta.device)
     plan_found_reward = torch.zeros((meta.batch_size,)).to(meta.device)
     pi = torch.argwhere(a1 == meta.planning_action & is_active.squeeze(1)).squeeze(1) # indices of planning actions
@@ -324,8 +305,8 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]):
     d_plan += torch.sum(is_active).item()
 
     # increment time
-    dt = torch.ones_like(time) * concrete_action_time
-    dt[pi, :] = planning_action_time
+    dt = torch.ones_like(time) * meta.concrete_action_time
+    dt[pi, :] = meta.planning_action_time
 
     # push results
     rews.append(rew)
@@ -359,12 +340,10 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]):
 
   # update losses
   # ------------
-  #  jl: βp: 0.5 | βe: 0.05 | βv: 0.05 | βr: 1.0
-  beta_p = 0.5  # predictive weight  
-  # beta_e = 0.05 # prior weight
-  beta_e = 0.00 # prior weight
-  beta_v = 0.05 # value function weight
-  beta_r = 1.   # reward prediction weight
+  beta_p = meta.beta_p  # predictive weight  
+  beta_e = meta.beta_e # prior weight
+  beta_v = meta.beta_v # value function weight
+  beta_r = meta.beta_r   # reward prediction weight
 
   L_vt = torch.tensor(0.0, device=meta.device)
   L_rpe = torch.tensor(0.0, device=meta.device)
@@ -405,12 +384,11 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]):
   tot_rew = torch.mean(torch.sum(rews * actives, dim=1))
 
   # ------------
-
   wall_clock_t = time_fn() - wall_clock_t0
 
   print(f'loss: {L.item():.3f} | p(plan): {(n_plan/d_plan):.3f} | rew: {tot_rew.item():.3f} | t: {wall_clock_t:.3f}')
 
-  return L
+  return EpisodeResult(loss=L)
 
 def main():
   prefer_gpu = False
@@ -426,8 +404,9 @@ def main():
 
   for e in range(num_episodes):
     print(f'{e+1} of {num_episodes}')
-    mazes = [env.build_maze_arena(s) for _ in range(meta.batch_size)]
-    loss = run_episode(meta, model, mazes)
+    mazes = env.build_maze_arenas(s, meta.batch_size)
+    res = run_episode(meta, model, mazes)
+    loss = res.loss
     optim.zero_grad()
     loss.backward()
     optim.step()

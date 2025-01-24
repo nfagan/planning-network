@@ -77,6 +77,12 @@ class Arena(object):
     np.random.shuffle(ij)
     self.remove_wall(ij[0][0], ij[0][1], ij[0][2])
 
+def build_maze_arenas(s: int, n: int):
+  """
+  construct `n` traversible maze arenas with side length `s`
+  """
+  return [build_maze_arena(s) for _ in range(n)]
+
 def build_maze_arena(s: int):
   """
   construct a traversible maze arena with side length `s`
