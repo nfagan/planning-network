@@ -6,6 +6,7 @@ import torch.optim
 import torch.nn.functional as F
 from dataclasses import dataclass
 from typing import List
+from time import time as time_fn
 
 """
 Use batch as first dimension.
@@ -213,7 +214,7 @@ def build_model(*, meta: Meta, hidden_size=100) -> AgentModel:
   rnn = RNN(in_size=num_inputs, hidden_size=hs)
   policy = Policy(rnn_hidden_size=hs, output_size=policy_output_size)
   prediction = Prediction(input_size=hs + num_actions, output_size=pred_output_size)
-  return AgentModel(rnn=rnn, policy=policy, prediction=prediction)
+  return AgentModel(rnn=rnn, policy=policy, prediction=prediction).to(meta.device)
 
 def predicted_goal_states(pred_r: torch.Tensor):
   return torch.argmax(torch.softmax(pred_r, dim=1), dim=1)
@@ -245,6 +246,8 @@ def td_error(rews: torch.Tensor, v: torch.Tensor):
 def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]):
   """
   """
+  wall_clock_t0 = time_fn()
+
   a = torch.randint(0, meta.num_actions, (meta.batch_size,)).to(meta.device)
   s = torch.randint(0, meta.num_states, (meta.batch_size,)).to(meta.device)
   # @TODO: Make sure s != rew_loc to start
@@ -401,15 +404,20 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]):
   # ------------
   tot_rew = torch.mean(torch.sum(rews * actives, dim=1))
 
-  print(f'loss: {L.item():.3f} | p(plan): {(n_plan/d_plan):.3f} | rew: {tot_rew.item():.3f}')
+  # ------------
+
+  wall_clock_t = time_fn() - wall_clock_t0
+
+  print(f'loss: {L.item():.3f} | p(plan): {(n_plan/d_plan):.3f} | rew: {tot_rew.item():.3f} | t: {wall_clock_t:.3f}')
 
   return L
 
 def main():
+  prefer_gpu = False
   s = 4 # arena side length
   batch_size = 40
   num_episodes = 10000
-  device = torch.device('cpu')
+  device = torch.device('cuda:0' if prefer_gpu and torch.cuda.is_available() else 'cpu')
 
   meta = make_meta(arena_len=s, batch_size=batch_size, plan_len=8, device=device)
   model = build_model(meta=meta)
