@@ -29,6 +29,17 @@ def sample_actions(ps: torch.Tensor):
   r = torch.multinomial(ps, 1, True)
   return r.squeeze(1)
 
+def prior_loss(meta: Meta, log_pi: torch.Tensor, active: torch.Tensor):
+  """
+  priors.jl: return -KL[q || p], q: log_pi, p: uniform
+  """
+  act = active.repeat(log_pi.shape[1], 1).T
+  n_action = meta.num_actions
+  logp = torch.log(torch.ones_like(log_pi) / n_action) * act
+  log_pi = log_pi * act
+  lprior = torch.sum(torch.exp(log_pi) * (logp - log_pi))
+  return lprior
+
 def make_meta(*, arena_len: int, batch_size: int, plan_len: int, device: torch.device) -> Meta:
   """
   walls_build.jl/useful_dimensions:
@@ -297,6 +308,7 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]):
     plan_found_reward = torch.zeros((meta.batch_size,)).to(meta.device)
     pi = torch.argwhere(a1 == meta.planning_action & is_active.squeeze(1)).squeeze(1) # indices of planning actions
     if pi.numel() > 0:
+      # with torch.enable_grad():
       with torch.no_grad():
         path, found_rew = rollout(
           meta=meta, model=model, arenas=[mazes[i] for i in pi], s=s[pi], a=a[pi], 
@@ -347,12 +359,14 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]):
   #  jl: βp: 0.5 | βe: 0.05 | βv: 0.05 | βr: 1.0
   beta_p = 0.5  # predictive weight  
   beta_e = 0.05 # prior weight
+  # beta_e = 0.00 # prior weight
   beta_v = 0.05 # value function weight
   beta_r = 1.   # reward prediction weight
 
   L_vt = torch.tensor(0.0, device=meta.device)
   L_rpe = torch.tensor(0.0, device=meta.device)
   L_pred = torch.tensor(0.0, device=meta.device)
+  L_prior = torch.tensor(0.0, device=meta.device)
 
   ds = td_error(rews, vs)
   N = ds.shape[1]
@@ -365,6 +379,9 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]):
     lp = torch.tensor([log_pis[i, actions[i, t], t] for i in range(log_pis.shape[0])]).to(meta.device)
     rpe_term = ds[:, t] * lp * actives[:, t]
     L_rpe -= torch.sum(rpe_term)
+
+    # prior loss to encourage entropy in policy
+    L_prior -= prior_loss(meta, log_pis[:, :, t], actives[:, t])
 
   # ------------
   # import pdb; pdb.set_trace()
@@ -379,12 +396,12 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]):
   """
   # print(f'pred: {(L_pred*beta_p).item():.3f} | prior: ... | val: {(L_vt*beta_v).item():.3f} | rpe: {(L_rpe*beta_r).item():.3f}')
 
-  L = L_vt * beta_v + L_rpe * beta_r + L_pred * beta_p
+  L = L_vt * beta_v + L_rpe * beta_r + L_pred * beta_p + L_prior * beta_e
 
   # ------------
   tot_rew = torch.mean(torch.sum(rews * actives, dim=1))
 
-  print(f'loss: {L.item()} | p(plan): {(n_plan/d_plan):.3f} | rew: {tot_rew.item():.3f}')
+  print(f'loss: {L.item():.3f} | p(plan): {(n_plan/d_plan):.3f} | rew: {tot_rew.item():.3f}')
 
   return L
 
