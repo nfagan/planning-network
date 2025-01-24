@@ -258,7 +258,7 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]):
   planning_action_time = 0.12   # @TODO
 
   t = 0
-  p_plan = d_plan = 0.0
+  n_plan = d_plan = 0.0
   while torch.any(time < T):
     plan_input = None
     if t > 0: plan_input = gen_plan_input(meta=meta, path_hot=paths_hot, found_reward=plan_found_reward)
@@ -295,7 +295,7 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]):
     # plan
     paths_hot = torch.zeros((meta.batch_size, meta.plan_len * meta.num_concrete_actions)).to(meta.device)
     plan_found_reward = torch.zeros((meta.batch_size,)).to(meta.device)
-    pi = torch.argwhere(a1 == meta.planning_action).squeeze(1) # indices of planning actions
+    pi = torch.argwhere(a1 == meta.planning_action & is_active.squeeze(1)).squeeze(1) # indices of planning actions
     if pi.numel() > 0:
       with torch.no_grad():
         path, found_rew = rollout(
@@ -305,8 +305,8 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]):
       paths_hot[pi, :] = F.one_hot(
         path, meta.num_concrete_actions).flatten(1).type(paths_hot.dtype).to(meta.device)
       plan_found_reward[pi] = found_rew
-    p_plan += pi.numel()
-    d_plan += meta.batch_size # @TODO: + num_active
+    n_plan += pi.numel()
+    d_plan += torch.sum(is_active).item()
 
     # increment time
     dt = torch.ones_like(time) * concrete_action_time
@@ -384,7 +384,7 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]):
   # ------------
   tot_rew = torch.mean(torch.sum(rews * actives, dim=1))
 
-  print(f'loss: {L.item()} | p(plan): {(p_plan/d_plan):.3f} | rew: {tot_rew.item():.3f}')
+  print(f'loss: {L.item()} | p(plan): {(n_plan/d_plan):.3f} | rew: {tot_rew.item():.3f}')
 
   return L
 
