@@ -361,8 +361,8 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]):
   # ------------
   #  jl: βp: 0.5 | βe: 0.05 | βv: 0.05 | βr: 1.0
   beta_p = 0.5  # predictive weight  
-  beta_e = 0.05 # prior weight
-  # beta_e = 0.00 # prior weight
+  # beta_e = 0.05 # prior weight
+  beta_e = 0.00 # prior weight
   beta_v = 0.05 # value function weight
   beta_r = 1.   # reward prediction weight
 
@@ -416,17 +416,17 @@ def main():
   prefer_gpu = False
   s = 4 # arena side length
   batch_size = 40
-  num_episodes = 10000
+  num_episodes = 25000
   device = torch.device('cuda:0' if prefer_gpu and torch.cuda.is_available() else 'cpu')
 
   meta = make_meta(arena_len=s, batch_size=batch_size, plan_len=8, device=device)
   model = build_model(meta=meta)
-  mazes = [env.build_maze_arena(s) for _ in range(meta.batch_size)]
 
   optim = torch.optim.Adam(lr=1e-3, params=model.parameters())
 
   for e in range(num_episodes):
     print(f'{e+1} of {num_episodes}')
+    mazes = [env.build_maze_arena(s) for _ in range(meta.batch_size)]
     loss = run_episode(meta, model, mazes)
     optim.zero_grad()
     loss.backward()
