@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from dataclasses import dataclass
 from typing import List
 from time import time as time_fn
+import os
 
 # ----------------------------------------------------------------------------
 
@@ -34,7 +35,7 @@ class Meta:
   # ----
   #  jl: βp: 0.5 | βe: 0.05 | βv: 0.05 | βr: 1.0
   beta_p = 0.5  # predictive weight
-  # beta_e = 0.05 # prior weight
+  beta_e = 0.05 # prior weight
   beta_e = 0.00 # prior weight
   beta_v = 0.05 # value function weight
   beta_r = 1.   # reward prediction weight
@@ -341,14 +342,14 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]) -> Episod
   # update losses
   # ------------
   beta_p = meta.beta_p  # predictive weight  
-  beta_e = meta.beta_e # prior weight
-  beta_v = meta.beta_v # value function weight
-  beta_r = meta.beta_r   # reward prediction weight
+  beta_e = meta.beta_e  # prior weight
+  beta_v = meta.beta_v  # value function weight
+  beta_r = meta.beta_r  # reward prediction weight
 
-  L_vt = torch.tensor(0.0, device=meta.device)
-  L_rpe = torch.tensor(0.0, device=meta.device)
   L_pred = torch.tensor(0.0, device=meta.device)
   L_prior = torch.tensor(0.0, device=meta.device)
+  L_vt = torch.tensor(0.0, device=meta.device)
+  L_rpe = torch.tensor(0.0, device=meta.device)
 
   ds = td_error(rews, vs)
   N = ds.shape[1]
@@ -358,7 +359,9 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]) -> Episod
     L_vt -= vt_term
 
     # td errors weighted by logits of selected actions
+    # lp = log_pis[torch.arange(log_pis.shape[0]), actions[:, t], t]
     lp = torch.tensor([log_pis[i, actions[i, t], t] for i in range(log_pis.shape[0])]).to(meta.device)
+
     rpe_term = ds[:, t] * lp * actives[:, t]
     L_rpe -= torch.sum(rpe_term)
 
@@ -394,7 +397,7 @@ def main():
   prefer_gpu = False
   s = 4 # arena side length
   batch_size = 40
-  num_episodes = 25000
+  num_episodes = 50000
   device = torch.device('cuda:0' if prefer_gpu and torch.cuda.is_available() else 'cpu')
 
   meta = make_meta(arena_len=s, batch_size=batch_size, plan_len=8, device=device)
@@ -410,6 +413,10 @@ def main():
     optim.zero_grad()
     loss.backward()
     optim.step()
+
+    if (e == num_episodes - 1) or (e > 0 and e % int(5e3) == 0):
+      save_p = os.path.join(os.getcwd(), 'checkpoints', f'cp-{e}.pth')
+      torch.save({'state': model.state_dict()}, save_p)
 
 if __name__ == '__main__':
   main()
