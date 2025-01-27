@@ -33,7 +33,7 @@ class Meta:
   #  jl: βp: 0.5 | βe: 0.05 | βv: 0.05 | βr: 1.0
   beta_p = 0.5  # predictive weight
   beta_e = 0.05 # prior weight
-  beta_e = 0.00 # prior weight
+  # beta_e = 0.00 # prior weight
   beta_v = 0.05 # value function weight
   beta_r = 1.   # reward prediction weight
 
@@ -231,13 +231,23 @@ def act_concretely(
     # perform a concrete action (a movement)
     sn = env.move_agent(s[i].item(), act, mazes[i])
     if sn == rew_loc[i]:  # reached the goal
-      # teleport the agent
-      # @TODO: to a *non-goal state*
-      sn = torch.randint(0, meta.num_states, (1,))
+      # teleport the agent to a new state that isn't the reward location
+      while True:
+        sn = torch.randint(0, meta.num_states, (1,))
+        if sn != rew_loc[i]:
+          break
       # update reward
       rew[i, 0] = 1.
     s1[i] = sn
   return s1, rew
+
+def new_state_not_at_reward(n: int, rew_loc: torch.Tensor):
+  rew = torch.randint(0, n, (rew_loc.shape[0],))
+  i = rew == rew_loc
+  while torch.any(i):
+    rew[i] = torch.randint(0, n, (torch.sum(i),))
+    i = rew == rew_loc
+  return rew
 
 def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]) -> EpisodeResult:
   assert meta.batch_size == len(mazes)
@@ -245,9 +255,8 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]) -> Episod
   wall_clock_t0 = time_fn()
 
   a = torch.randint(0, meta.num_actions, (meta.batch_size,)).to(meta.device)
-  s = torch.randint(0, meta.num_states, (meta.batch_size,)).to(meta.device)
-  # @TODO: Make sure s != rew_loc to start
   rew_loc = torch.randint(0, meta.num_states, (meta.batch_size,)).to(meta.device)
+  s = new_state_not_at_reward(meta.num_states, rew_loc).to(meta.device)
 
   prev_rewards = torch.zeros((meta.batch_size, 1)).to(meta.device)
   time = torch.zeros((meta.batch_size, 1)).to(meta.device)

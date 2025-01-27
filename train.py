@@ -7,7 +7,7 @@ def main():
   prefer_gpu = False
   s = 4 # arena side length
   batch_size = 40
-  num_episodes = 50000
+  num_episodes = 50000 * 2
   device = torch.device('cuda:0' if prefer_gpu and torch.cuda.is_available() else 'cpu')
 
   meta = eval.make_meta(arena_len=s, batch_size=batch_size, plan_len=8, device=device)
