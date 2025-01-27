@@ -65,9 +65,6 @@ class Arena(object):
     self.walls[iy0, ix0, a] = False
     self.walls[iy1, ix1, ah] = False
 
-    # self.walls[s0, s1, a] = False
-    # self.walls[s1, s0, ah] = False
-
   def neighbors(self, i: int):
     return _neighbors(i, self.s)
   

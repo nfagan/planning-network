@@ -11,6 +11,16 @@ from time import time as time_fn
 @dataclass
 class EpisodeResult:
   loss: torch.Tensor
+  rewards: torch.Tensor
+  actions: torch.Tensor
+  actives: torch.Tensor
+  predicted_states: torch.Tensor
+  predicted_rewards: torch.Tensor
+  reward_locs: torch.Tensor
+  mean_total_reward: float
+  p_plan: float
+  state_prediction_acc: float
+  reward_prediction_acc: float
 
 @dataclass
 class Meta:
@@ -47,6 +57,11 @@ def decompose_prediction_output(meta: Meta, pred_output: torch.Tensor):
   pred_r = pred_output[:, meta.num_states:]
   return pred_s, pred_r
 
+def to_pred_state(pred_s: torch.Tensor):
+  logits = pred_s.permute(0, 2, 1)
+  ind = torch.argmax(torch.softmax(logits, dim=2), dim=2)
+  return ind
+
 def state_prediction_loss(true_s: torch.Tensor, pred_s: torch.Tensor):
   logits = pred_s.permute(0, 2, 1).flatten(0, 1)
   targets = true_s.flatten()
@@ -56,6 +71,18 @@ def reward_prediction_loss(true_rew_s: torch.Tensor, pred_r: torch.Tensor):
   logits = pred_r.permute(0, 2, 1).flatten(0, 1)
   targets = true_rew_s.flatten()
   return F.cross_entropy(logits, targets, reduction='sum')
+
+def state_prediction_acc(true_s: torch.Tensor, pred_s: torch.Tensor):
+  logits = pred_s.permute(0, 2, 1).flatten(0, 1)
+  targets = true_s.flatten()
+  ind = torch.argmax(torch.softmax(logits, dim=1), dim=1)
+  return torch.sum(targets == ind) / targets.shape[0]
+
+def reward_prediction_acc(true_rew_s: torch.Tensor, pred_r: torch.Tensor):
+  logits = pred_r.permute(0, 2, 1).flatten(0, 1)
+  targets = true_rew_s.flatten()
+  ind = torch.argmax(torch.softmax(logits, dim=1), dim=1)
+  return torch.sum(targets == ind) / targets.shape[0]
 
 def td_error(rews: torch.Tensor, v: torch.Tensor):
   N = rews.shape[1]
@@ -249,7 +276,7 @@ def new_state_not_at_reward(n: int, rew_loc: torch.Tensor):
     i = rew == rew_loc
   return rew
 
-def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]) -> EpisodeResult:
+def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena], verbose=True) -> EpisodeResult:
   assert meta.batch_size == len(mazes)
 
   wall_clock_t0 = time_fn()
@@ -375,9 +402,10 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]) -> Episod
     L_prior -= prior_loss(meta, log_pis[:, :, t], actives[:, t])
 
   # ------------
-  # import pdb; pdb.set_trace()
   state_pred_loss = state_prediction_loss(s0s, pred_states)
   reward_pred_loss = reward_prediction_loss(true_rew_locs, pred_rewards)
+  state_pred_acc = state_prediction_acc(s0s, pred_states)
+  reward_pred_acc = reward_prediction_acc(true_rew_locs, pred_rewards)
   L_pred += state_pred_loss + reward_pred_loss
   # ------------
 
@@ -385,9 +413,13 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]) -> Episod
   jl: pred: 6203.166 | prior: -5.09006 | val: 8.010938 | rpe: -238.36337
   py: pred: 7123.762 | prior: ... | val: -14.416 | rpe: -45.529
   """
-  # print(f'pred: {(L_pred*beta_p).item():.3f} | prior: ... | val: {(L_vt*beta_v).item():.3f} | rpe: {(L_rpe*beta_r).item():.3f}')
 
   L = L_vt * beta_v + L_rpe * beta_r + L_pred * beta_p + L_prior * beta_e
+
+  if verbose:
+    print(
+      f'L: {L.item():.3f} | pred: {(L_pred*beta_p).item():.3f} | prior: {(L_prior*beta_e).item():.3f} | ' + 
+      f'val: {(L_vt*beta_v).item():.3f} | rpe: {(L_rpe*beta_r).item():.3f}')
 
   # ------------
   tot_rew = torch.mean(torch.sum(rews * actives, dim=1))
@@ -395,6 +427,19 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena]) -> Episod
   # ------------
   wall_clock_t = time_fn() - wall_clock_t0
 
-  print(f'loss: {L.item():.3f} | p(plan): {(n_plan/d_plan):.3f} | rew: {tot_rew.item():.3f} | t: {wall_clock_t:.3f}')
+  # ------------
+  p_plan = n_plan/d_plan
 
-  return EpisodeResult(loss=L)
+  if verbose:
+    print(
+      f'loss: {L.item():.3f} | p(plan): {p_plan:.3f} | ' + 
+      f'rew: {tot_rew.item():.3f} | t: {wall_clock_t:.3f}')
+
+  return EpisodeResult(
+    loss=L, rewards=rews, actions=actions, actives=actives,
+    mean_total_reward=tot_rew.item(), p_plan=p_plan, 
+    state_prediction_acc=state_pred_acc.item(), 
+    reward_prediction_acc=reward_pred_acc.item(),
+    predicted_states=to_pred_state(pred_states), 
+    predicted_rewards=to_pred_state(pred_rewards),
+    reward_locs=rew_loc)
