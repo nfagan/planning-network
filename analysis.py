@@ -26,8 +26,10 @@ if __name__ == '__main__':
   p_plans = np.array([res[i]['res'].p_plan for i in ri])
   earned_rew = np.array([res[i]['res'].mean_total_reward for i in ri])
   reward_acc = np.array([res[i]['exploit_acc'] for i in ri])
+  state_acc = np.array([res[i]['res'].state_prediction_acc for i in ri])
   xs = np.array([res[i]['experience'] / 1e6 for i in ri])
 
   # analysis_scalar(xs, p_plans, 'p(plan)')
   # analysis_scalar(xs, earned_rew, 'mean reward')
-  analysis_scalar(xs, reward_acc, 'exploit reward pred acc')
+  # analysis_scalar(xs, reward_acc, 'exploit reward pred acc')
+  analysis_scalar(xs, state_acc, 'state pred acc')

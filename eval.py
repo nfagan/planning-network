@@ -346,7 +346,7 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena], verbose=T
     rews.append(rew)
     log_pis.append(log_pi)
     vs.append(v)
-    actions.append(a)
+    actions.append(a) # @TODO: a or a1?
     s0s.append(s)
     s1s.append(s1)
     pred_states.append(pred_state)
@@ -392,8 +392,8 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena], verbose=T
     L_vt -= vt_term
 
     # td errors weighted by logits of selected actions
-    # lp = log_pis[torch.arange(log_pis.shape[0]), actions[:, t], t]
-    lp = torch.tensor([log_pis[i, actions[i, t], t] for i in range(log_pis.shape[0])]).to(meta.device)
+    lp = log_pis[torch.arange(log_pis.shape[0]), actions[:, t], t]
+    # lp = torch.tensor([log_pis[i, actions[i, t], t] for i in range(log_pis.shape[0])]).to(meta.device)
 
     rpe_term = ds[:, t] * lp * actives[:, t]
     L_rpe -= torch.sum(rpe_term)
@@ -415,11 +415,15 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena], verbose=T
   """
 
   L = L_vt * beta_v + L_rpe * beta_r + L_pred * beta_p + L_prior * beta_e
+  L /= rews.shape[0]
 
   if verbose:
     print(
       f'L: {L.item():.3f} | pred: {(L_pred*beta_p).item():.3f} | prior: {(L_prior*beta_e).item():.3f} | ' + 
       f'val: {(L_vt*beta_v).item():.3f} | rpe: {(L_rpe*beta_r).item():.3f}')
+    
+  if False and L_rpe.item() < -1e3:
+    import pdb; pdb.set_trace()
 
   # ------------
   tot_rew = torch.mean(torch.sum(rews * actives, dim=1))
