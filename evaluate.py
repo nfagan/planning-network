@@ -65,9 +65,13 @@ if __name__ == '__main__':
   mazes = env.build_maze_arenas(arena_len, batch_size)
 
   cp_dir = os.path.join(REPO_ROOT, 'checkpoints')
+  dst_dir = os.path.join(REPO_ROOT, 'results')
+
   cp_inds = np.arange(0, int(7e4)+1, int(5e3))
+  tot_experience = cp_inds * 40 # @TODO: This batch size was fixed during training
   models = [load_model(cp_dir, i, meta, hidden_size) for i in cp_inds]
 
+  rows = []
   for i, model in enumerate(models):
     print(f'{i+1} of {len(models)}')
     res = eval.run_episode(meta, model, mazes, verbose=False)
@@ -75,4 +79,11 @@ if __name__ == '__main__':
     first_exploit = find_first_exploit(ri)
     exploit_acc = exploit_reward_state_prediction_accuracy(
       first_exploit, res.reward_locs, res.predicted_rewards)
-    import pdb; pdb.set_trace()
+    row = {
+      'res': res,
+      'first_exploit': first_exploit,
+      'exploit_acc': exploit_acc,
+      'experience': tot_experience[i]
+    }
+    rows.append(row)
+  torch.save({'rows': rows}, os.path.join(dst_dir, 'evaluation.pth'))
