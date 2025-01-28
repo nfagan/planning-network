@@ -14,6 +14,8 @@ class EpisodeResult:
   rewards: torch.Tensor
   actions: torch.Tensor
   actives: torch.Tensor
+  states0: torch.Tensor
+  states1: torch.Tensor
   predicted_states: torch.Tensor
   predicted_rewards: torch.Tensor
   reward_locs: torch.Tensor
@@ -25,8 +27,8 @@ class EpisodeResult:
 @dataclass
 class Meta:
   num_actions: int
+  planning_enabled: bool
   num_concrete_actions: int # excludes planning action
-  batch_size: int
   num_inputs: int
   num_planning_inputs: int
   num_planning_outputs: int
@@ -108,12 +110,14 @@ def prior_loss(meta: Meta, log_pi: torch.Tensor, active: torch.Tensor):
   lprior = torch.sum(torch.exp(log_pi) * (logp - log_pi))
   return lprior
 
-def make_meta(*, arena_len: int, batch_size: int, plan_len: int, device: torch.device) -> Meta:
+def make_meta(
+    *, arena_len: int, plan_len: int, 
+    device: torch.device, planning_enabled=True) -> Meta:
   """
   walls_build.jl/useful_dimensions
   planning.jl/build_planner
   """
-  num_actions = 5
+  num_actions = 5 if planning_enabled else 4
   num_concrete_actions = 4  # movements; excludes planning action
   num_states = arena_len * arena_len
   num_walls = 2 * num_states
@@ -121,9 +125,9 @@ def make_meta(*, arena_len: int, batch_size: int, plan_len: int, device: torch.d
   num_outputs = num_actions + 1 + num_states
 
   # (one-hot) action sequence and whether we ended at the reward location
-  num_planning_inputs = 4 * plan_len + 1
+  num_planning_inputs = 0 if not planning_enabled else 4 * plan_len + 1
   # (imagined) reward location
-  num_planning_outputs = num_states 
+  num_planning_outputs = num_states
 
   num_inputs += num_planning_inputs
   num_outputs += num_planning_outputs
@@ -131,10 +135,10 @@ def make_meta(*, arena_len: int, batch_size: int, plan_len: int, device: torch.d
   return Meta(
     num_inputs=num_inputs, num_outputs=num_outputs, 
     num_actions=num_actions, num_states=num_states, 
-    batch_size=batch_size, plan_len=plan_len, 
+    plan_len=plan_len,
     num_concrete_actions=num_concrete_actions, 
     num_planning_inputs=num_planning_inputs, num_planning_outputs=num_planning_outputs,
-    device=device)
+    device=device, planning_enabled=planning_enabled)
 
 def forward_agent_model(*, meta: Meta, model: AgentModel, x: torch.Tensor, h0: torch.Tensor):
   """
@@ -152,7 +156,7 @@ def forward_agent_model(*, meta: Meta, model: AgentModel, x: torch.Tensor, h0: t
   ah = F.one_hot(a, meta.num_actions)
   pred_input = torch.hstack([ytemp, ah])
   pred_output = model.prediction(pred_input)
-  return h_rnn, log_pi, v, pred_output, a
+  return h_rnn, torch.log(ps), v, pred_output, a
 
 def gen_plan_input(*, meta: Meta, path_hot: torch.Tensor, found_reward: torch.Tensor):
   x = torch.zeros((path_hot.shape[0], meta.num_planning_inputs))
@@ -172,7 +176,7 @@ def gen_input(
   x = torch.zeros((len(arenas), meta.num_inputs), device=meta.device)
   x[:, :meta.num_actions] = prev_ahot
   x[:, meta.num_actions:meta.num_actions+1] = prev_rewards
-  x[:, meta.num_actions+1:meta.num_actions+2] = time
+  x[:, meta.num_actions+1:meta.num_actions+2] = time / meta.T
   x[:, meta.num_actions+2:meta.num_actions+2+meta.num_states] = shot
   x[:, meta.num_actions+2+meta.num_states:meta.num_actions+2+meta.num_states+meta.num_states*2] = walls
   if plan_input is not None:
@@ -254,7 +258,9 @@ def act_concretely(
 
   for i in range(len(mazes)):
     act = a1[i].item()
-    if act == meta.planning_action: continue
+    if act == meta.planning_action: 
+      s1[i] = s[i]
+      continue
     # perform a concrete action (a movement)
     sn = env.move_agent(s[i].item(), act, mazes[i])
     if sn == rew_loc[i]:  # reached the goal
@@ -276,18 +282,19 @@ def new_state_not_at_reward(n: int, rew_loc: torch.Tensor):
     i = rew == rew_loc
   return rew
 
-def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena], verbose=True) -> EpisodeResult:
-  assert meta.batch_size == len(mazes)
+def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena], verbose=2) -> EpisodeResult:
+  #
+  batch_size = len(mazes)
 
   wall_clock_t0 = time_fn()
 
-  a = torch.randint(0, meta.num_actions, (meta.batch_size,)).to(meta.device)
-  rew_loc = torch.randint(0, meta.num_states, (meta.batch_size,)).to(meta.device)
+  a = torch.randint(0, meta.num_actions, (batch_size,)).to(meta.device)
+  rew_loc = torch.randint(0, meta.num_states, (batch_size,)).to(meta.device)
   s = new_state_not_at_reward(meta.num_states, rew_loc).to(meta.device)
 
-  prev_rewards = torch.zeros((meta.batch_size, 1)).to(meta.device)
-  time = torch.zeros((meta.batch_size, 1)).to(meta.device)
-  h_rnn = model.rnn.make_h0(meta.batch_size, meta.device)
+  prev_rewards = torch.zeros((batch_size, 1)).to(meta.device)
+  time = torch.zeros((batch_size, 1)).to(meta.device)
+  h_rnn = model.rnn.make_h0(batch_size, meta.device)
 
   actions = []
   s0s = []  # states at step t
@@ -303,7 +310,8 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena], verbose=T
   n_plan = d_plan = 0.0
   while torch.any(time < meta.T):
     plan_input = None
-    if t > 0: plan_input = gen_plan_input(meta=meta, path_hot=paths_hot, found_reward=plan_found_reward)
+    if meta.planning_enabled and t > 0:
+      plan_input = gen_plan_input(meta=meta, path_hot=paths_hot, found_reward=plan_found_reward)
 
     # examples that haven't yet exceeded the time limit
     is_active = time < meta.T
@@ -322,31 +330,31 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena], verbose=T
     s1, rew = act_concretely(meta, mazes, s, a1, rew_loc)
 
     # implement rollouts, when the chosen action is to plan
-    paths_hot = torch.zeros((meta.batch_size, meta.plan_len * meta.num_concrete_actions)).to(meta.device)
-    plan_found_reward = torch.zeros((meta.batch_size,)).to(meta.device)
-    pi = torch.argwhere(a1 == meta.planning_action & is_active.squeeze(1)).squeeze(1) # indices of planning actions
-    if pi.numel() > 0:
-      # with torch.enable_grad():
+    if meta.planning_enabled:
+      paths_hot = torch.zeros((batch_size, meta.plan_len * meta.num_concrete_actions)).to(meta.device)
+      plan_found_reward = torch.zeros((batch_size,)).to(meta.device)
+      # indices of planning actions
+      pi = torch.argwhere(a1 == meta.planning_action & is_active.squeeze(1)).squeeze(1) 
       with torch.no_grad():
         path, found_rew = rollout(
           meta=meta, model=model, arenas=[mazes[i] for i in pi], s=s[pi], a=a[pi], 
           goal_s=predicted_goal_states(pred_reward)[pi],
           h_rnn=h_rnn[pi, :], rewards=prev_rewards[pi, :], time=time[pi, :])
-      paths_hot[pi, :] = F.one_hot(
-        path, meta.num_concrete_actions).flatten(1).type(paths_hot.dtype).to(meta.device)
-      plan_found_reward[pi] = found_rew
-    n_plan += pi.numel()
-    d_plan += torch.sum(is_active).item()
+        paths_hot[pi, :] = F.one_hot(
+          path, meta.num_concrete_actions).flatten(1).type(paths_hot.dtype).to(meta.device)
+        plan_found_reward[pi] = found_rew
+      n_plan += pi.numel()
+      d_plan += torch.sum(is_active).item()
 
     # increment time
     dt = torch.ones_like(time) * meta.concrete_action_time
-    dt[pi, :] = meta.planning_action_time
+    if meta.planning_enabled: dt[pi, :] = meta.planning_action_time
 
     # push results
     rews.append(rew)
     log_pis.append(log_pi)
     vs.append(v)
-    actions.append(a) # @TODO: a or a1?
+    actions.append(a1)
     s0s.append(s)
     s1s.append(s1)
     pred_states.append(pred_state)
@@ -384,7 +392,9 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena], verbose=T
   L_vt = torch.tensor(0.0, device=meta.device)
   L_rpe = torch.tensor(0.0, device=meta.device)
 
-  ds = td_error(rews, vs)
+  with torch.no_grad():
+    ds = td_error(rews, vs)
+
   N = ds.shape[1]
   for t in range(N):
     vt = ds[:, t] * vs[:, t] # value function (batch)
@@ -395,16 +405,16 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena], verbose=T
     lp = log_pis[torch.arange(log_pis.shape[0]), actions[:, t], t]
     # lp = torch.tensor([log_pis[i, actions[i, t], t] for i in range(log_pis.shape[0])]).to(meta.device)
 
-    rpe_term = ds[:, t] * lp * actives[:, t]
+    rpe_term = ds[:, t].detach() * lp * actives[:, t]
     L_rpe -= torch.sum(rpe_term)
 
     # prior loss to encourage entropy in policy
     L_prior -= prior_loss(meta, log_pis[:, :, t], actives[:, t])
 
   # ------------
-  state_pred_loss = state_prediction_loss(s0s, pred_states)
+  state_pred_loss = state_prediction_loss(s1s, pred_states)
   reward_pred_loss = reward_prediction_loss(true_rew_locs, pred_rewards)
-  state_pred_acc = state_prediction_acc(s0s, pred_states)
+  state_pred_acc = state_prediction_acc(s1s, pred_states)
   reward_pred_acc = reward_prediction_acc(true_rew_locs, pred_rewards)
   L_pred += state_pred_loss + reward_pred_loss
   # ------------
@@ -417,13 +427,10 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena], verbose=T
   L = L_vt * beta_v + L_rpe * beta_r + L_pred * beta_p + L_prior * beta_e
   L /= rews.shape[0]
 
-  if verbose:
+  if verbose > 1:
     print(
       f'L: {L.item():.3f} | pred: {(L_pred*beta_p).item():.3f} | prior: {(L_prior*beta_e).item():.3f} | ' + 
       f'val: {(L_vt*beta_v).item():.3f} | rpe: {(L_rpe*beta_r).item():.3f}')
-    
-  if False and L_rpe.item() < -1e3:
-    import pdb; pdb.set_trace()
 
   # ------------
   tot_rew = torch.mean(torch.sum(rews * actives, dim=1))
@@ -432,9 +439,9 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena], verbose=T
   wall_clock_t = time_fn() - wall_clock_t0
 
   # ------------
-  p_plan = n_plan/d_plan
+  p_plan = 0. if d_plan == 0 else n_plan/d_plan
 
-  if verbose:
+  if verbose > 0:
     print(
       f'loss: {L.item():.3f} | p(plan): {p_plan:.3f} | ' + 
       f'rew: {tot_rew.item():.3f} | t: {wall_clock_t:.3f}')
@@ -446,4 +453,4 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena], verbose=T
     reward_prediction_acc=reward_pred_acc.item(),
     predicted_states=to_pred_state(pred_states), 
     predicted_rewards=to_pred_state(pred_rewards),
-    reward_locs=rew_loc)
+    reward_locs=rew_loc, states0=s0s, states1=s1s)

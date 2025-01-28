@@ -4,19 +4,19 @@ import env
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from typing import List
+from typing import List, Tuple
 import os
 
-REPO_ROOT = '/Users/nick/Documents/mattarlab/project1/planning-network'
-
-def load_model(cp_dir: str, cp_ind: int):
+def load_checkpoint(cp_dir: str, cp_ind: int) -> Tuple[AgentModel, eval.Meta, List[env.Arena]]:
   cp_p = os.path.join(cp_dir, f'cp-{cp_ind}.pth')
   sd = torch.load(cp_p)
   model = AgentModel.from_ctor_params(sd['params'])
   model.load_state_dict(sd['state'])
-  return model
-
-# -------------------------------------------------------------------------------------
+  if 'meta' in sd:
+    meta = sd['meta']
+  else: # @TODO: remove this
+    meta = eval.make_meta(arena_len=4, plan_len=8, device=None, planning_enabled=False)
+  return model, meta, sd['mazes']
 
 def find_rewards(rews: torch.Tensor):
   trials = []
@@ -28,8 +28,6 @@ def find_rewards(rews: torch.Tensor):
       trials.append([])
   return trials
 
-# -------------------------------------------------------------------------------------
-
 def find_first_exploit(rews: List[List[int]]):
   exploit_ind = np.ones((len(rews),), dtype=int) * -1
   for i, t in enumerate(rews):
@@ -37,10 +35,8 @@ def find_first_exploit(rews: List[List[int]]):
       exploit_ind[i] = t[1]
   return exploit_ind
 
-# -------------------------------------------------------------------------------------
-
 def exploit_reward_state_prediction_accuracy(
-  exploit_ind: np.array, rew_locs: torch.Tensor, pred_rew: torch.Tensor):
+  exploit_ind: np.ndarray, rew_locs: torch.Tensor, pred_rew: torch.Tensor):
   #
   n = 0
   d = 0
@@ -59,26 +55,28 @@ if __name__ == '__main__':
   dev = torch.device('cpu')
   batch_size = int(1e3)
   arena_len = 4
-  meta = eval.make_meta(arena_len=arena_len, batch_size=batch_size, plan_len=8, device=dev)
   mazes = env.build_maze_arenas(arena_len, batch_size)
 
-  cp_dir = os.path.join(REPO_ROOT, 'checkpoints/plan-yes2')
-  dst_dir = os.path.join(REPO_ROOT, 'results')
+  subdir = 'plan-no-fixed-maze'
+  cp_dir = os.path.join(os.getcwd(), 'checkpoints', subdir)
+  dst_dir = os.path.join(os.getcwd(), 'results')
 
-  cp_inds = np.arange(0, int(7e4)+1, int(5e3))
+  cp_inds = np.arange(0, int(40e3)+1, int(5e3))
   tot_experience = cp_inds * 40 # @TODO: This batch size was fixed during training
-  models = [load_model(cp_dir, i) for i in cp_inds]
 
   rows = []
-  for i, model in enumerate(models):
-    print(f'{i+1} of {len(models)}')
-    res = eval.run_episode(meta, model, mazes, verbose=False)
+  for i in range(len(cp_inds)):
+    print(f'{i+1} of {len(cp_inds)}')
+    model, meta, cp_mazes = load_checkpoint(cp_dir, cp_inds[i])
+    res = eval.run_episode(meta, model, mazes, verbose=0)
+    train_res = eval.run_episode(meta, model, cp_mazes, verbose=0)
     ri = find_rewards(res.rewards)
     first_exploit = find_first_exploit(ri)
     exploit_acc = exploit_reward_state_prediction_accuracy(
       first_exploit, res.reward_locs, res.predicted_rewards)
     row = {
       'res': res,
+      'train_res': train_res,
       'first_exploit': first_exploit,
       'exploit_acc': exploit_acc,
       'experience': tot_experience[i]

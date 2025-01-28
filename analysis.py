@@ -7,8 +7,6 @@ import os
 
 REPO_ROOT = '/Users/nick/Documents/mattarlab/project1/planning-network'
 
-# -------------------------------------------------------------------------------------
-
 def analysis_scalar(xs, ys, ylab):
   plt.figure(1)
   plt.clf()
@@ -16,17 +14,17 @@ def analysis_scalar(xs, ys, ylab):
   plt.ylabel(ylab)
   plt.show()
 
-# -------------------------------------------------------------------------------------
-
 if __name__ == '__main__':
   eval_p = os.path.join(REPO_ROOT, 'results', 'evaluation.pth')
   res = torch.load(eval_p)['rows']
   ri = range(len(res))
+  # rv = 'res'
+  rv = 'train_res'
 
-  p_plans = np.array([res[i]['res'].p_plan for i in ri])
-  earned_rew = np.array([res[i]['res'].mean_total_reward for i in ri])
+  p_plans = np.array([res[i][rv].p_plan for i in ri])
+  earned_rew = np.array([res[i][rv].mean_total_reward for i in ri])
   reward_acc = np.array([res[i]['exploit_acc'] for i in ri])
-  state_acc = np.array([res[i]['res'].state_prediction_acc for i in ri])
+  state_acc = np.array([res[i][rv].state_prediction_acc for i in ri])
   xs = np.array([res[i]['experience'] / 1e6 for i in ri])
 
   analysis_scalar(xs, p_plans, 'p(plan)')

@@ -59,7 +59,7 @@ class Arena(object):
     True if taking action `a` in state `i` would not pass through a wall.
     """
     x, y = index_to_coord(i, self.s)
-    return self.walls[y, x, a]
+    return not self.walls[y, x, a]
 
   def fill_walls(self):
     self.walls[:] = True
@@ -78,7 +78,12 @@ class Arena(object):
     ij = np.argwhere(self.walls)
     assert ij.size > 0
     np.random.shuffle(ij)
-    self.remove_wall(ij[0][0], ij[0][1], ij[0][2])
+    y, x, a = ij[0, 1], ij[0, 0], ij[0, 2]
+    s0 = coord_to_index(x, y, self.s)
+    neighs, _ = _neighbors(s0, self.s)
+    s1 = neighs[a]
+    self.remove_wall(s0, s1, a)
+    # self.remove_wall(ij[0][0], ij[0][1], ij[0][2])
 
 def build_fixed_maze_arenas(s: int, n: int) -> List[Arena]:
   if n <= 0:
