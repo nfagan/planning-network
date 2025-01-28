@@ -9,11 +9,10 @@ import os
 
 REPO_ROOT = '/Users/nick/Documents/mattarlab/project1/planning-network'
 
-def load_model(cp_dir: str, cp_ind: int, meta: eval.Meta, hidden_size: int):
-  # @TODO: serialize model attributes
-  model = eval.build_model(meta=meta, hidden_size=hidden_size)
+def load_model(cp_dir: str, cp_ind: int):
   cp_p = os.path.join(cp_dir, f'cp-{cp_ind}.pth')
   sd = torch.load(cp_p)
+  model = AgentModel.from_ctor_params(sd['params'])
   model.load_state_dict(sd['state'])
   return model
 
@@ -59,17 +58,16 @@ def exploit_reward_state_prediction_accuracy(
 if __name__ == '__main__':
   dev = torch.device('cpu')
   batch_size = int(1e3)
-  hidden_size = 100
   arena_len = 4
   meta = eval.make_meta(arena_len=arena_len, batch_size=batch_size, plan_len=8, device=dev)
   mazes = env.build_maze_arenas(arena_len, batch_size)
 
-  cp_dir = os.path.join(REPO_ROOT, 'checkpoints')
+  cp_dir = os.path.join(REPO_ROOT, 'checkpoints/plan-yes2')
   dst_dir = os.path.join(REPO_ROOT, 'results')
 
   cp_inds = np.arange(0, int(7e4)+1, int(5e3))
   tot_experience = cp_inds * 40 # @TODO: This batch size was fixed during training
-  models = [load_model(cp_dir, i, meta, hidden_size) for i in cp_inds]
+  models = [load_model(cp_dir, i) for i in cp_inds]
 
   rows = []
   for i, model in enumerate(models):

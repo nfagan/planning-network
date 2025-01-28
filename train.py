@@ -1,32 +1,44 @@
 import eval
 import env
+from model import AgentModel
 import torch
 import os
 
+def save_checkpoint(model: AgentModel, save_p: str, fname: str):
+  if not os.path.exists(save_p): os.makedirs(save_p, exist_ok=True)
+  sd = {'state': model.state_dict(), 'params': model.ctor_params()}
+  torch.save(sd, os.path.join(save_p, fname))
+
 def main():
   prefer_gpu = False
+  planning_enabled = True
+  use_fixed_mazes = False
   s = 4 # arena side length
   batch_size = 40
   num_episodes = 50000 * 2
+  subdir = 'plan-yes2'
   device = torch.device('cuda:0' if prefer_gpu and torch.cuda.is_available() else 'cpu')
 
-  meta = eval.make_meta(arena_len=s, batch_size=batch_size, plan_len=8, device=device)
+  meta = eval.make_meta(
+    arena_len=s, batch_size=batch_size, plan_len=8, 
+    device=device, planning_enabled=planning_enabled)
   model = eval.build_model(meta=meta)
+  fixed_mazes = env.build_fixed_maze_arenas(s, meta.batch_size)
 
   optim = torch.optim.Adam(lr=1e-3, params=model.parameters())
 
   for e in range(num_episodes):
     print(f'{e+1} of {num_episodes}')
-    mazes = env.build_maze_arenas(s, meta.batch_size)
-    res = eval.run_episode(meta, model, mazes)
+    mazes = fixed_mazes if use_fixed_mazes else env.build_maze_arenas(s, meta.batch_size)
+    res = eval.run_episode(meta, model, mazes, planning_enabled=planning_enabled)
     loss = res.loss
     optim.zero_grad()
     loss.backward()
     optim.step()
 
     if (e == num_episodes - 1) or e % int(5e3) == 0:
-      save_p = os.path.join(os.getcwd(), 'checkpoints', f'cp-{e}.pth')
-      torch.save({'state': model.state_dict()}, save_p)
+      save_p = os.path.join(os.getcwd(), 'checkpoints', subdir)
+      save_checkpoint(model, save_p, f'cp-{e}.pth')
 
 if __name__ == '__main__':
   main()

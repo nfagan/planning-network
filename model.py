@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from typing import Dict
 
 class RNN(nn.Module):
   def __init__(self, *, in_size: int, hidden_size: int):
@@ -9,6 +10,7 @@ class RNN(nn.Module):
     """
     super().__init__()
     assert in_size > 0 and hidden_size > 0
+    self.in_size = in_size
     self.hidden_size = hidden_size
     self.gru = nn.GRU(in_size, hidden_size, batch_first=True)
 
@@ -28,6 +30,9 @@ class RNN(nn.Module):
     hh, hw = h.shape[0], h.shape[1]
     y, h1 = self.gru(x.reshape(xh, 1, xw), h.reshape(1, hh, hw))
     return y.squeeze(1), h1.squeeze(0)
+  
+  def ctor_params(self):
+    return {'in_size': self.in_size, 'hidden_size': self.hidden_size}
 
 class Policy(nn.Module):
   def __init__(self, *, rnn_hidden_size: int, output_size: int):
@@ -37,6 +42,8 @@ class Policy(nn.Module):
     """
     super().__init__()
     assert rnn_hidden_size > 0 and output_size > 0
+    self.rnn_hidden_size = rnn_hidden_size
+    self.output_size = output_size
     self.linear = nn.Linear(rnn_hidden_size, output_size)
 
   def forward(self, y: torch.Tensor):
@@ -47,6 +54,9 @@ class Policy(nn.Module):
     """
     return self.linear(y)
   
+  def ctor_params(self):
+    return {'rnn_hidden_size': self.rnn_hidden_size, 'output_size': self.output_size}
+  
 class Prediction(nn.Module):
   def __init__(self, *, input_size: int, output_size: int):
     """
@@ -56,6 +66,8 @@ class Prediction(nn.Module):
     """
     super().__init__()
     assert input_size > 0 and output_size > 0
+    self.input_size = input_size
+    self.output_size = output_size
     self.linear0 = nn.Linear(input_size, output_size)
     self.linear1 = nn.Linear(output_size, output_size)
   
@@ -65,6 +77,9 @@ class Prediction(nn.Module):
     elsewhere as a distribution over states
     """
     return self.linear1(torch.relu(self.linear0(y))) 
+  
+  def ctor_params(self):
+    return {'input_size': self.input_size, 'output_size': self.output_size}
 
 class AgentModel(nn.Module):
   def __init__(self, *, rnn: RNN, policy: Policy, prediction: Prediction):
@@ -72,3 +87,17 @@ class AgentModel(nn.Module):
     self.rnn = rnn
     self.policy = policy
     self.prediction = prediction
+
+  def ctor_params(self):
+    return {
+      'rnn': self.rnn.ctor_params(),
+      'policy': self.policy.ctor_params(), 
+      'prediction': self.prediction.ctor_params()
+    }
+  
+  @staticmethod
+  def from_ctor_params(params: Dict):
+    rnn = RNN(**params['rnn'])
+    policy = Policy(**params['policy'])
+    prediction = Prediction(**params['prediction'])
+    return AgentModel(rnn=rnn, policy=policy, prediction=prediction)

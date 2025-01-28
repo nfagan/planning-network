@@ -1,4 +1,5 @@
 import numpy as np
+from typing import List
 
 """
 0: right
@@ -48,6 +49,11 @@ class Arena(object):
     self.s = s
     self.walls = np.zeros((l, l, 4), dtype=bool)
 
+  def clone(self):
+    res = Arena(self.s)
+    res.walls = self.walls.copy()
+    return res
+
   def traversible(self, i: int, a: int):
     """
     True if taking action `a` in state `i` would not pass through a wall.
@@ -73,6 +79,14 @@ class Arena(object):
     assert ij.size > 0
     np.random.shuffle(ij)
     self.remove_wall(ij[0][0], ij[0][1], ij[0][2])
+
+def build_fixed_maze_arenas(s: int, n: int) -> List[Arena]:
+  if n <= 0:
+    return []
+  res = [build_maze_arena(s)]
+  for _ in range(n - 1):
+    res.append(res[0].clone())
+  return res
 
 def build_maze_arenas(s: int, n: int):
   """
