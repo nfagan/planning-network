@@ -16,8 +16,8 @@ def main():
   use_fixed_mazes = False
   s = 4 # arena side length
   batch_size = 40
-  num_episodes = 50000 * 2
-  subdir = 'plan-yes'
+  num_episodes = 50000 * 4
+  subdir = 'plan-yes-full'
   device = torch.device('cuda:0' if prefer_gpu and torch.cuda.is_available() else 'cpu')
 
   meta = eval.make_meta(

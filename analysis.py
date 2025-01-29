@@ -5,17 +5,17 @@ import matplotlib.pyplot as plt
 from typing import List
 import os
 
-REPO_ROOT = '/Users/nick/Documents/mattarlab/project1/planning-network'
-
 def analysis_scalar(xs, ys, ylab):
-  plt.figure(1)
+  f = plt.figure(1)
   plt.clf()
   plt.plot(xs, ys)
   plt.ylabel(ylab)
   plt.show()
+  plt.draw()
+  f.savefig(os.path.join(os.getcwd(), 'plots', f'{ylab}.png'))
 
 if __name__ == '__main__':
-  eval_p = os.path.join(REPO_ROOT, 'results', 'evaluation.pth')
+  eval_p = os.path.join(os.getcwd(), 'results', 'evaluation.pth')
   res = torch.load(eval_p)['rows']
   ri = range(len(res))
   # rv = 'res'
