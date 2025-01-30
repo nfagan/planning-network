@@ -57,11 +57,11 @@ if __name__ == '__main__':
   arena_len = 4
   mazes = env.build_maze_arenas(arena_len, batch_size)
 
-  subdir = 'plan-yes'
+  subdir = 'plan-yes-full'
   cp_dir = os.path.join(os.getcwd(), 'checkpoints', subdir)
   dst_dir = os.path.join(os.getcwd(), 'results')
 
-  cp_inds = np.arange(0, int(95e3)+1, int(5e3))
+  cp_inds = np.arange(0, int(155e3)+1, int(5e3))
   tot_experience = cp_inds * 40 # @TODO: This batch size was fixed during training
 
   rows = []

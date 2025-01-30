@@ -5,16 +5,18 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 import os
+from typing import Tuple, List
 
 # 0: right | 1: left | 2: up | 3: down
 
-def load_model(cp_dir: str, cp_ind: int):
+def load_model(cp_dir: str, cp_ind: int) -> Tuple[AgentModel, eval.Meta, List[env.Arena]]:
   cp_p = os.path.join(cp_dir, f'cp-{cp_ind}.pth')
   sd = torch.load(cp_p)
   model = AgentModel.from_ctor_params(sd['params'])
   model.load_state_dict(sd['state'])
   mazes = sd['mazes']
-  return model, mazes
+  meta = sd['meta']
+  return model, meta, mazes
 
 def draw_arena(arena: env.Arena, goal: int):
   s = arena.s
@@ -63,25 +65,19 @@ def draw_trial(arena: env.Arena, states: torch.Tensor, actions: torch.Tensor, go
     plt.show()
 
 if __name__ == '__main__':
-  planning_enabled = False
-  batch_size = 1
-  arena_len = 4
-  meta = eval.make_meta(
-    arena_len=arena_len, plan_len=8, device=torch.device('cpu'), planning_enabled=planning_enabled)
-  mazes = env.build_maze_arenas(arena_len, batch_size)
-  # arena = mazes[0]
-
-  subdir = 'plan-no-fixed-maze'
+  subdir = 'plan-yes'
   cp_dir = os.path.join(os.getcwd(), 'checkpoints', subdir)
-  model, cp_mazes = load_model(cp_dir, int(30e3))
-  res = eval.run_episode(meta, model, cp_mazes, verbose=0)
-  arena = cp_mazes[0]
+
+  model, meta, cp_mazes = load_model(cp_dir, int(95e3))
+  new_mazes = env.build_maze_arenas(int(np.sqrt(meta.num_states)), 1)
+  use_mazes = new_mazes
+  arena = use_mazes[0]
+
+  res = eval.run_episode(meta, model, use_mazes, verbose=0)
 
   active = res.actives[0, :].type(torch.bool)
   states = res.states0[0, active]
   actions = res.actions[0, active]
-
-  print(arena.walls)
 
   plt.figure(1)
   draw_trial(arena, states, actions, res.reward_locs[0].item())

@@ -51,64 +51,17 @@ class Meta:
 
 # ----------------------------------------------------------------------------
 
-def predicted_goal_states(pred_r: torch.Tensor):
-  return torch.argmax(torch.softmax(pred_r, dim=1), dim=1)
+def build_model(*, meta: Meta, hidden_size=100) -> AgentModel:
+  hs = hidden_size
+  num_inputs, num_outputs, num_actions = meta.num_inputs, meta.num_outputs, meta.num_actions
+  policy_output_size = num_actions + 1  # +1 for value
+  # i.e., only predict state occupancy (ignore policy + value outputs)
+  pred_output_size = num_outputs - num_actions - 1 
 
-def decompose_prediction_output(meta: Meta, pred_output: torch.Tensor):
-  pred_s = pred_output[:, :meta.num_states]
-  pred_r = pred_output[:, meta.num_states:]
-  return pred_s, pred_r
-
-def to_pred_state(pred_s: torch.Tensor):
-  logits = pred_s.permute(0, 2, 1)
-  ind = torch.argmax(torch.softmax(logits, dim=2), dim=2)
-  return ind
-
-def state_prediction_loss(true_s: torch.Tensor, pred_s: torch.Tensor):
-  logits = pred_s.permute(0, 2, 1).flatten(0, 1)
-  targets = true_s.flatten()
-  return F.cross_entropy(logits, targets, reduction='sum')
-
-def reward_prediction_loss(true_rew_s: torch.Tensor, pred_r: torch.Tensor):
-  logits = pred_r.permute(0, 2, 1).flatten(0, 1)
-  targets = true_rew_s.flatten()
-  return F.cross_entropy(logits, targets, reduction='sum')
-
-def state_prediction_acc(true_s: torch.Tensor, pred_s: torch.Tensor):
-  logits = pred_s.permute(0, 2, 1).flatten(0, 1)
-  targets = true_s.flatten()
-  ind = torch.argmax(torch.softmax(logits, dim=1), dim=1)
-  return torch.sum(targets == ind) / targets.shape[0]
-
-def reward_prediction_acc(true_rew_s: torch.Tensor, pred_r: torch.Tensor):
-  logits = pred_r.permute(0, 2, 1).flatten(0, 1)
-  targets = true_rew_s.flatten()
-  ind = torch.argmax(torch.softmax(logits, dim=1), dim=1)
-  return torch.sum(targets == ind) / targets.shape[0]
-
-def td_error(rews: torch.Tensor, v: torch.Tensor):
-  N = rews.shape[1]
-  r = torch.zeros((rews.shape[0],), device=v.device)
-  ds = torch.zeros_like(v)
-  for t in range(N):
-    r = rews[:, N - t - 1] + r
-    ds[:, N - t - 1] = r - v[:, N - t - 1]
-  return ds
-
-def sample_actions(ps: torch.Tensor): 
-  r = torch.multinomial(ps, 1, True)
-  return r.squeeze(1)
-
-def prior_loss(meta: Meta, log_pi: torch.Tensor, active: torch.Tensor):
-  """
-  priors.jl: return -KL[q || p], q: log_pi, p: uniform
-  """
-  act = active.repeat(log_pi.shape[1], 1).T
-  n_action = meta.num_actions
-  logp = torch.log(torch.ones_like(log_pi) / n_action) * act
-  log_pi = log_pi * act
-  lprior = torch.sum(torch.exp(log_pi) * (logp - log_pi))
-  return lprior
+  rnn = RNN(in_size=num_inputs, hidden_size=hs)
+  policy = Policy(rnn_hidden_size=hs, output_size=policy_output_size)
+  prediction = Prediction(input_size=hs + num_actions, output_size=pred_output_size)
+  return AgentModel(rnn=rnn, policy=policy, prediction=prediction).to(meta.device)
 
 def make_meta(
     *, arena_len: int, plan_len: int, 
@@ -139,6 +92,56 @@ def make_meta(
     num_concrete_actions=num_concrete_actions, 
     num_planning_inputs=num_planning_inputs, num_planning_outputs=num_planning_outputs,
     device=device, planning_enabled=planning_enabled)
+
+def predicted_goal_states(pred_r: torch.Tensor):
+  return torch.argmax(torch.softmax(pred_r, dim=1), dim=1)
+
+def decompose_prediction_output(meta: Meta, pred_output: torch.Tensor):
+  pred_s = pred_output[:, :meta.num_states]
+  pred_r = pred_output[:, meta.num_states:]
+  return pred_s, pred_r
+
+def to_pred_state(pred_s: torch.Tensor):
+  logits = pred_s.permute(0, 2, 1)
+  ind = torch.argmax(torch.softmax(logits, dim=2), dim=2)
+  return ind
+
+def prediction_loss(true_s: torch.Tensor, pred_s: torch.Tensor, actives: torch.Tensor):
+  act = actives.flatten(0, 1).type(torch.bool)
+  logits = pred_s.permute(0, 2, 1).flatten(0, 1)
+  targets = true_s.flatten()
+  return F.cross_entropy(logits[act], targets[act], reduction='sum')
+
+def prediction_acc(true_s: torch.Tensor, pred_s: torch.Tensor, actives: torch.Tensor):
+  act = actives.flatten(0, 1).type(torch.bool)
+  logits = pred_s.permute(0, 2, 1).flatten(0, 1)
+  targets = true_s.flatten()
+  ind = torch.argmax(torch.softmax(logits, dim=1), dim=1)
+  return torch.sum(targets[act] == ind[act]) / act.shape[0]
+
+def td_error(rews: torch.Tensor, v: torch.Tensor):
+  N = rews.shape[1]
+  r = torch.zeros((rews.shape[0],), device=v.device)
+  ds = torch.zeros_like(v)
+  for t in range(N):
+    r = rews[:, N - t - 1] + r
+    ds[:, N - t - 1] = r - v[:, N - t - 1]
+  return ds
+
+def sample_actions(ps: torch.Tensor): 
+  r = torch.multinomial(ps, 1, True)
+  return r.squeeze(1)
+
+def prior_loss(meta: Meta, log_pi: torch.Tensor, active: torch.Tensor):
+  """
+  priors.jl: return -KL[q || p], q: log_pi, p: uniform
+  """
+  act = active.repeat(log_pi.shape[1], 1).T
+  n_action = meta.num_actions
+  logp = torch.log(torch.ones_like(log_pi) / n_action) * act
+  log_pi = log_pi * act
+  lprior = torch.sum(torch.exp(log_pi) * (logp - log_pi))
+  return lprior
 
 def forward_agent_model(*, meta: Meta, model: AgentModel, x: torch.Tensor, h0: torch.Tensor):
   """
@@ -235,17 +238,40 @@ def rollout(
 
   return path, found_rew
 
-def build_model(*, meta: Meta, hidden_size=100) -> AgentModel:
-  hs = hidden_size
-  num_inputs, num_outputs, num_actions = meta.num_inputs, meta.num_outputs, meta.num_actions
-  policy_output_size = num_actions + 1  # +1 for value
-  # i.e., only predict state occupancy (ignore policy + value outputs)
-  pred_output_size = num_outputs - num_actions - 1 
+def plan(
+    *, meta: Meta, model: AgentModel, mazes: List[env.Arena], pi: torch.Tensor,
+    h_rnn: torch.Tensor, s: torch.Tensor, a: torch.Tensor, time: torch.Tensor,
+    pred_reward: torch.Tensor, prev_rewards: torch.Tensor):
+  """
+  """
+  batch_size = len(mazes)
+  paths_hot = torch.zeros((batch_size, meta.plan_len * meta.num_concrete_actions)).to(meta.device)
+  plan_found_reward = torch.zeros((batch_size,)).to(meta.device)
+  # indices of planning actions
+  with torch.no_grad():
+    path, found_rew = rollout(
+      meta=meta, model=model, arenas=[mazes[i] for i in pi], s=s[pi], a=a[pi], 
+      goal_s=predicted_goal_states(pred_reward)[pi],
+      h_rnn=h_rnn[pi, :], rewards=prev_rewards[pi, :], time=time[pi, :])
+    paths_hot[pi, :] = F.one_hot(
+      path, meta.num_concrete_actions).flatten(1).type(paths_hot.dtype).to(meta.device)
+    plan_found_reward[pi] = found_rew
+  return paths_hot, plan_found_reward
 
-  rnn = RNN(in_size=num_inputs, hidden_size=hs)
-  policy = Policy(rnn_hidden_size=hs, output_size=policy_output_size)
-  prediction = Prediction(input_size=hs + num_actions, output_size=pred_output_size)
-  return AgentModel(rnn=rnn, policy=policy, prediction=prediction).to(meta.device)
+# paths_hot = torch.zeros((batch_size, meta.plan_len * meta.num_concrete_actions)).to(meta.device)
+# plan_found_reward = torch.zeros((batch_size,)).to(meta.device)
+# # indices of planning actions
+# pi = torch.argwhere(a1 == meta.planning_action & is_active.squeeze(1)).squeeze(1) 
+# with torch.no_grad():
+#   path, found_rew = rollout(
+#     meta=meta, model=model, arenas=[mazes[i] for i in pi], s=s[pi], a=a[pi], 
+#     goal_s=predicted_goal_states(pred_reward)[pi],
+#     h_rnn=h_rnn[pi, :], rewards=prev_rewards[pi, :], time=time[pi, :])
+#   paths_hot[pi, :] = F.one_hot(
+#     path, meta.num_concrete_actions).flatten(1).type(paths_hot.dtype).to(meta.device)
+#   plan_found_reward[pi] = found_rew
+# n_plan += pi.numel()
+# d_plan += torch.sum(is_active).item()
 
 def act_concretely(
   meta: Meta, mazes: List[env.Arena], s: torch.Tensor, a1: torch.Tensor, rew_loc: torch.Tensor):
@@ -309,20 +335,20 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena], verbose=2
   t = 0
   n_plan = d_plan = 0.0
   while torch.any(time < meta.T):
+    # steps that haven't yet exceeded the time limit
+    is_active = time < meta.T
+
+    # prepare model inputs for this step
     plan_input = None
     if meta.planning_enabled and t > 0:
       plan_input = gen_plan_input(meta=meta, path_hot=paths_hot, found_reward=plan_found_reward)
 
-    # examples that haven't yet exceeded the time limit
-    is_active = time < meta.T
-
-    prev_ahot = F.one_hot(a, meta.num_actions)
-    shot = F.one_hot(s, meta.num_states)
-
-    # perform a step of recurrent processing
     x = gen_input(
-      meta=meta, arenas=mazes, prev_ahot=prev_ahot, 
-      prev_rewards=prev_rewards, shot=shot, time=time, plan_input=plan_input)
+      meta=meta, arenas=mazes, prev_ahot=F.one_hot(a, meta.num_actions), 
+      prev_rewards=prev_rewards, shot=F.one_hot(s, meta.num_states), 
+      time=time, plan_input=plan_input)
+    
+    # perform a step of recurrent processing
     h_rnn, log_pi, v, pred_output, a1 = forward_agent_model(meta=meta, model=model, x=x, h0=h_rnn)
     pred_state, pred_reward = decompose_prediction_output(meta, pred_output)
 
@@ -331,18 +357,12 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena], verbose=2
 
     # implement rollouts, when the chosen action is to plan
     if meta.planning_enabled:
-      paths_hot = torch.zeros((batch_size, meta.plan_len * meta.num_concrete_actions)).to(meta.device)
-      plan_found_reward = torch.zeros((batch_size,)).to(meta.device)
-      # indices of planning actions
-      pi = torch.argwhere(a1 == meta.planning_action & is_active.squeeze(1)).squeeze(1) 
-      with torch.no_grad():
-        path, found_rew = rollout(
-          meta=meta, model=model, arenas=[mazes[i] for i in pi], s=s[pi], a=a[pi], 
-          goal_s=predicted_goal_states(pred_reward)[pi],
-          h_rnn=h_rnn[pi, :], rewards=prev_rewards[pi, :], time=time[pi, :])
-        paths_hot[pi, :] = F.one_hot(
-          path, meta.num_concrete_actions).flatten(1).type(paths_hot.dtype).to(meta.device)
-        plan_found_reward[pi] = found_rew
+      pi = torch.argwhere(a1 == meta.planning_action & is_active.squeeze(1)).squeeze(1)
+
+      paths_hot, plan_found_reward = plan(
+        meta=meta, model=model, mazes=mazes, pi=pi, h_rnn=h_rnn, s=s, a=a, 
+        time=time, pred_reward=pred_reward, prev_rewards=prev_rewards)
+      
       n_plan += pi.numel()
       d_plan += torch.sum(is_active).item()
 
@@ -412,10 +432,10 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena], verbose=2
     L_prior -= prior_loss(meta, log_pis[:, :, t], actives[:, t])
 
   # ------------
-  state_pred_loss = state_prediction_loss(s1s, pred_states)
-  reward_pred_loss = reward_prediction_loss(true_rew_locs, pred_rewards)
-  state_pred_acc = state_prediction_acc(s1s, pred_states)
-  reward_pred_acc = reward_prediction_acc(true_rew_locs, pred_rewards)
+  state_pred_loss = prediction_loss(s1s, pred_states, actives)
+  reward_pred_loss = prediction_loss(true_rew_locs, pred_rewards, actives)
+  state_pred_acc = prediction_acc(s1s, pred_states, actives)
+  reward_pred_acc = prediction_acc(true_rew_locs, pred_rewards, actives)
   L_pred += state_pred_loss + reward_pred_loss
   # ------------
 
