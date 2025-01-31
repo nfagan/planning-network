@@ -3,7 +3,6 @@ import eval
 import env
 import torch
 import numpy as np
-import matplotlib.pyplot as plt
 from typing import List, Tuple
 import os
 
@@ -61,7 +60,7 @@ if __name__ == '__main__':
   cp_dir = os.path.join(os.getcwd(), 'checkpoints', subdir)
   dst_dir = os.path.join(os.getcwd(), 'results')
 
-  cp_inds = np.arange(0, int(155e3)+1, int(5e3))
+  cp_inds = np.arange(0, int(195e3)+1, int(5e3))[-10:]
   tot_experience = cp_inds * 40 # @TODO: This batch size was fixed during training
 
   rows = []

@@ -258,21 +258,6 @@ def plan(
     plan_found_reward[pi] = found_rew
   return paths_hot, plan_found_reward
 
-# paths_hot = torch.zeros((batch_size, meta.plan_len * meta.num_concrete_actions)).to(meta.device)
-# plan_found_reward = torch.zeros((batch_size,)).to(meta.device)
-# # indices of planning actions
-# pi = torch.argwhere(a1 == meta.planning_action & is_active.squeeze(1)).squeeze(1) 
-# with torch.no_grad():
-#   path, found_rew = rollout(
-#     meta=meta, model=model, arenas=[mazes[i] for i in pi], s=s[pi], a=a[pi], 
-#     goal_s=predicted_goal_states(pred_reward)[pi],
-#     h_rnn=h_rnn[pi, :], rewards=prev_rewards[pi, :], time=time[pi, :])
-#   paths_hot[pi, :] = F.one_hot(
-#     path, meta.num_concrete_actions).flatten(1).type(paths_hot.dtype).to(meta.device)
-#   plan_found_reward[pi] = found_rew
-# n_plan += pi.numel()
-# d_plan += torch.sum(is_active).item()
-
 def act_concretely(
   meta: Meta, mazes: List[env.Arena], s: torch.Tensor, a1: torch.Tensor, rew_loc: torch.Tensor):
   """
