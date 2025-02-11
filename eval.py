@@ -16,6 +16,8 @@ class EpisodeResult:
   actives: torch.Tensor
   states0: torch.Tensor
   states1: torch.Tensor
+  log_pi: torch.Tensor
+  v: torch.Tensor
   predicted_states: torch.Tensor
   predicted_rewards: torch.Tensor
   reward_locs: torch.Tensor
@@ -453,6 +455,7 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena], verbose=2
 
   return EpisodeResult(
     loss=L, rewards=rews, actions=actions, actives=actives,
+    log_pi=log_pis, v=vs,
     mean_total_reward=tot_rew.item(), p_plan=p_plan, 
     state_prediction_acc=state_pred_acc.item(), 
     reward_prediction_acc=reward_pred_acc.item(),

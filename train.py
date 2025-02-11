@@ -11,6 +11,7 @@ def save_checkpoint(model: AgentModel, mazes, meta, save_p, fname):
   torch.save(sd, os.path.join(save_p, fname))
 
 def main():
+  save = False
   prefer_gpu = False
   planning_enabled = True
   use_fixed_mazes = False
@@ -36,7 +37,7 @@ def main():
     loss.backward()
     optim.step()
 
-    if (e == num_episodes - 1) or e % int(5e3) == 0:
+    if save and ((e == num_episodes - 1) or e % int(5e3) == 0):
       save_p = os.path.join(os.getcwd(), 'checkpoints', subdir)
       save_checkpoint(model, mazes, meta, save_p, f'cp-{e}.pth')
 
