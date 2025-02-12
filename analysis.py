@@ -1,9 +1,18 @@
-from model import AgentModel
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from typing import List
 import os
+import glob
+
+ROOT_P = os.getcwd()
+
+def load_results():
+  eval_p = os.path.join(ROOT_P, 'results')
+  eval_fs = glob.glob(f'{eval_p}/*.pth')
+  res = [torch.load(x)['row'] for x in eval_fs]
+  res = sorted(res, key=lambda x: x['experience'])
+  return res
 
 def analysis_scalar(xs, ys, ylab):
   f = plt.figure(1)
@@ -15,9 +24,9 @@ def analysis_scalar(xs, ys, ylab):
   f.savefig(os.path.join(os.getcwd(), 'plots', f'{ylab}.png'))
 
 if __name__ == '__main__':
-  eval_p = os.path.join(os.getcwd(), 'results', 'evaluation.pth')
-  res = torch.load(eval_p)['rows']
+  res = load_results()
   ri = range(len(res))
+
   # rv = 'res'
   rv = 'train_res'
 
