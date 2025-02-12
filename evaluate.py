@@ -57,6 +57,7 @@ if __name__ == '__main__':
   dst_dir = os.path.join(os.getcwd(), 'results')
 
   cp_inds = np.arange(0, int(195e3)+1, int(5e3))
+  cp_inds = [*cp_inds, int(200e3 - 1)]
   tot_experience = cp_inds * 40 # @TODO: This batch size was fixed during training
 
   for i in range(len(cp_inds)):
@@ -79,7 +80,8 @@ if __name__ == '__main__':
       'train_res': train_res,
       'first_exploit': first_exploit,
       'exploit_acc': exploit_acc,
-      'experience': tot_experience[i]
+      'experience': tot_experience[i],
+      'subdirectory': subdir
     }
 
     torch.save({'row': row}, os.path.join(dst_dir, f'evaluation-{subdir}-{cp_f}'))
