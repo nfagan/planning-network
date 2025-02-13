@@ -17,6 +17,7 @@ class EpisodeResult:
   states0: torch.Tensor
   states1: torch.Tensor
   log_pi: torch.Tensor
+  forced_rollouts: torch.Tensor
   v: torch.Tensor
   predicted_states: torch.Tensor
   predicted_rewards: torch.Tensor
@@ -25,6 +26,12 @@ class EpisodeResult:
   p_plan: float
   state_prediction_acc: float
   reward_prediction_acc: float
+
+@dataclass
+class EpisodeParams:
+  num_rollouts_per_planning_action: int = 1
+  force_rollouts_at_start_of_exploit_phase: bool = False
+  verbose: int = 2
 
 @dataclass
 class Meta:
@@ -204,6 +211,8 @@ def rollout(
   rmi = torch.arange(0, batch_size, device=meta.device)
 
   ytemp = h_rnn
+  dst_h_rnn = h_rnn.clone()
+
   for pi in range(meta.plan_len):
     if rmi.numel() == 0: break
 
@@ -227,6 +236,9 @@ def rollout(
     for b in rmi:
       path[b, pi] = a[b]
 
+    # record hidden state of non-goal-reached rollouts
+    dst_h_rnn[rmi, :] = h_rnn[rmi, :]
+
     # predict and sample new states
     pred_output = model.prediction(torch.hstack([ytemp, ah]))
     s = torch.argmax(torch.softmax(pred_output[:, :meta.num_states], dim=1), dim=1)
@@ -238,7 +250,7 @@ def rollout(
 
     time = time + 1.
 
-  return path, found_rew
+  return path, found_rew, dst_h_rnn
 
 def plan(
     *, meta: Meta, model: AgentModel, mazes: List[env.Arena], pi: torch.Tensor,
@@ -249,16 +261,19 @@ def plan(
   batch_size = len(mazes)
   paths_hot = torch.zeros((batch_size, meta.plan_len * meta.num_concrete_actions)).to(meta.device)
   plan_found_reward = torch.zeros((batch_size,)).to(meta.device)
+  dst_h_rnn = h_rnn.clone()
+
   # indices of planning actions
   with torch.no_grad():
-    path, found_rew = rollout(
+    path, found_rew, h = rollout(
       meta=meta, model=model, arenas=[mazes[i] for i in pi], s=s[pi], a=a[pi], 
       goal_s=predicted_goal_states(pred_reward)[pi],
       h_rnn=h_rnn[pi, :], rewards=prev_rewards[pi, :], time=time[pi, :])
     paths_hot[pi, :] = F.one_hot(
       path, meta.num_concrete_actions).flatten(1).type(paths_hot.dtype).to(meta.device)
     plan_found_reward[pi] = found_rew
-  return paths_hot, plan_found_reward
+    dst_h_rnn[pi, :] = h
+  return paths_hot, plan_found_reward, dst_h_rnn
 
 def act_concretely(
   meta: Meta, mazes: List[env.Arena], s: torch.Tensor, a1: torch.Tensor, rew_loc: torch.Tensor):
@@ -295,8 +310,13 @@ def new_state_not_at_reward(n: int, rew_loc: torch.Tensor):
     i = rew == rew_loc
   return rew
 
-def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena], verbose=2) -> EpisodeResult:
+def run_episode(
+    meta: Meta, model: AgentModel, mazes: List[env.Arena], 
+    params: EpisodeParams = EpisodeParams()) -> EpisodeResult:
   #
+  assert params.num_rollouts_per_planning_action > 0, \
+    'Expected at least 1 rollout per planning action'
+
   batch_size = len(mazes)
 
   wall_clock_t0 = time_fn()
@@ -318,6 +338,7 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena], verbose=2
   pred_states = []
   pred_rewards = []
   actives = []
+  forced_rollouts = []
 
   t = 0
   n_plan = d_plan = 0.0
@@ -342,13 +363,35 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena], verbose=2
     # update the agent's state, when the chosen action is concrete
     s1, rew = act_concretely(meta, mazes, s, a1, rew_loc)
 
-    # implement rollouts, when the chosen action is to plan
-    if meta.planning_enabled:
-      pi = torch.argwhere(a1 == meta.planning_action & is_active.squeeze(1)).squeeze(1)
+    # episodes that are are in the exploit phase
+    if len(rews) > 0:
+      is_exploit = torch.any(torch.hstack(rews) > 0., dim=1).to(meta.device)
+    else:
+      is_exploit = torch.zeros((batch_size,), dtype=torch.bool, device=meta.device)
 
-      paths_hot, plan_found_reward = plan(
-        meta=meta, model=model, mazes=mazes, pi=pi, h_rnn=h_rnn, s=s, a=a, 
-        time=time, pred_reward=pred_reward, prev_rewards=prev_rewards)
+    got_reward = (rew > 0.).squeeze(1)
+    # episodes that just entered the exploit phase
+    first_exploit = torch.logical_and(torch.logical_not(is_exploit), got_reward)
+    forced_rollout = torch.zeros_like(first_exploit)
+
+    if meta.planning_enabled:
+      # implement rollouts
+      if params.force_rollouts_at_start_of_exploit_phase:
+        # plan when this is the start of the exploit phase
+        plan_mask = first_exploit
+        forced_rollout = first_exploit
+      else:
+        # plan when the chosen action is to plan
+        plan_mask = a1 == meta.planning_action
+      # numeric indices of episodes that will plan
+      pi = torch.argwhere(plan_mask & is_active.squeeze(1)).squeeze(1)
+
+      plan_h_rnn = h_rnn.clone()
+      for _ in range(params.num_rollouts_per_planning_action):
+        # execute a rollout
+        paths_hot, plan_found_reward, plan_h_rnn = plan(
+          meta=meta, model=model, mazes=mazes, pi=pi, h_rnn=plan_h_rnn, s=s, a=a, 
+          time=time, pred_reward=pred_reward, prev_rewards=prev_rewards)
       
       n_plan += pi.numel()
       d_plan += torch.sum(is_active).item()
@@ -367,6 +410,7 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena], verbose=2
     pred_states.append(pred_state)
     pred_rewards.append(pred_reward)
     actives.append(is_active)
+    forced_rollouts.append(forced_rollout)
     
     # prepare next iteration
     a = a1
@@ -386,6 +430,7 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena], verbose=2
   pred_rewards = torch.stack(pred_rewards).permute(1, 2, 0)
   true_rew_locs = rew_loc.tile(pred_rewards.shape[2], 1).T
   actives = torch.stack(actives).permute(1, 0, 2).squeeze(2).type(pred_rewards.dtype)
+  forced_rollouts = torch.stack(forced_rollouts).T
 
   # update losses
   # ------------
@@ -434,7 +479,7 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena], verbose=2
   L = L_vt * beta_v + L_rpe * beta_r + L_pred * beta_p + L_prior * beta_e
   L /= rews.shape[0]
 
-  if verbose > 1:
+  if params.verbose > 1:
     print(
       f'L: {L.item():.3f} | pred: {(L_pred*beta_p).item():.3f} | prior: {(L_prior*beta_e).item():.3f} | ' + 
       f'val: {(L_vt*beta_v).item():.3f} | rpe: {(L_rpe*beta_r).item():.3f}')
@@ -448,13 +493,14 @@ def run_episode(meta: Meta, model: AgentModel, mazes: List[env.Arena], verbose=2
   # ------------
   p_plan = 0. if d_plan == 0 else n_plan/d_plan
 
-  if verbose > 0:
+  if params.verbose > 0:
     print(
       f'loss: {L.item():.3f} | p(plan): {p_plan:.3f} | ' + 
       f'rew: {tot_rew.item():.3f} | t: {wall_clock_t:.3f}')
 
   return EpisodeResult(
     loss=L, rewards=rews, actions=actions, actives=actives,
+    forced_rollouts=forced_rollouts,
     log_pi=log_pis, v=vs,
     mean_total_reward=tot_rew.item(), p_plan=p_plan, 
     state_prediction_acc=state_pred_acc.item(), 

@@ -15,16 +15,40 @@ def load_results():
   res = sorted(res, key=lambda x: x['experience'])
   return res
 
-def analysis_scalar(xs, ys, ylab):
+def analysis_scalar(xs, ys, ylab, save_p, ylim=None):
   f = plt.figure(1)
   plt.clf()
   plt.plot(xs, ys)
   plt.ylabel(ylab)
+  if ylim is not None: plt.ylim(ylim)
   plt.show()
   plt.draw()
-  f.savefig(os.path.join(os.getcwd(), 'plots', f'{ylab}.png'))
+  if save_p is not None:
+    f.savefig(os.path.join(save_p, f'{ylab}.png'))
+
+def analysis_multi(xs, zs, by, ylab, save_p, ylim=None):
+  f = plt.figure(1)
+  plt.clf()
+  h = plt.plot(xs, zs)
+  plt.ylabel(ylab)
+  num_lines = len(by)
+  cmap = plt.get_cmap('spring', num_lines)(np.arange(num_lines))[:, :3]
+  for i in range(num_lines):
+    h[i].set_color(cmap[i, :])
+    h[i].set_label(f'{by[i]}')
+  if ylim is not None: plt.ylim(ylim)
+  # import pdb; pdb.set_trace()
+  plt.legend()
+  plt.show()
+  plt.draw()
+  if save_p is not None:
+    f.savefig(os.path.join(save_p, f'{ylab}.png'))
 
 if __name__ == '__main__':
+  subdir = '60'
+  save_p = os.path.join(ROOT_P, 'plots', subdir)
+  if save_p is not None: os.makedirs(save_p, exist_ok=True)
+
   res = load_results()
   ri = range(len(res))
 
@@ -38,12 +62,19 @@ if __name__ == '__main__':
     'state_acc': np.array([res[i][rv].state_prediction_acc for i in ri]),
     'xs': np.array([res[i]['experience'] / 1e6 for i in ri]),
     'subdir': [res[i]['subdirectory'] for i in ri],
+    'num_rollouts': [res[i]['num_entropy_rollouts'] for i in ri],
+    'policy_entropies': [np.nanmean(res[i]['policy_entropies'], axis=0) for i in ri]
   })
 
-  mask = df['subdir'] == 'plan-yes-full'
+  mask = df['subdir'] == 'plan-yes-full-60'
   subset = df.loc[mask, :]
 
-  analysis_scalar(subset['xs'], subset['p_plans'], 'p(plan)')
-  analysis_scalar(subset['xs'], subset['earned_rew'], 'mean reward')
-  analysis_scalar(subset['xs'], subset['reward_acc'], 'exploit reward pred acc')
-  analysis_scalar(subset['xs'], subset['state_acc'], 'state pred acc')
+  entropies = np.stack(subset['policy_entropies'].values)
+  num_rollouts = subset['num_rollouts'].iloc[0]
+  rollouts_str = [f'# Rollouts = {x}' for x in num_rollouts]
+
+  analysis_multi(subset['xs'], entropies, rollouts_str, 'entropy', save_p)
+  # analysis_scalar(subset['xs'], subset['p_plans'], 'p(plan)', save_p, ylim=[0., 0.6])
+  # analysis_scalar(subset['xs'], subset['earned_rew'], 'mean reward', save_p, ylim=[0., 8.5])
+  # analysis_scalar(subset['xs'], subset['reward_acc'], 'exploit reward pred acc', save_p)
+  # analysis_scalar(subset['xs'], subset['state_acc'], 'state pred acc', save_p)
