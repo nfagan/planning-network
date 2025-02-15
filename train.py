@@ -13,7 +13,7 @@ def save_checkpoint(model: AgentModel, mazes, meta, ep_p: eval.EpisodeParams, sa
   torch.save(sd, os.path.join(save_p, fname))
 
 def main():
-  save = False
+  save = True
   prefer_gpu = False
   planning_enabled = True
   use_fixed_mazes = False
@@ -21,16 +21,19 @@ def main():
   batch_size = 40
   num_episodes = 50000 * 4
   hidden_size = 100
-  subdir = 'plan-yes-full'
+  # plan_len = 8  # long
+  plan_len = 4  # short
+  subdir = 'plan-yes-full-short-rollouts'
   device = torch.device('cuda:0' if prefer_gpu and torch.cuda.is_available() else 'cpu')
 
   ep_p = eval.EpisodeParams(
     force_rollouts_at_start_of_exploit_phase=False,
-    num_rollouts_per_planning_action=1
+    num_rollouts_per_planning_action=1,
+    verbose=2
   )
 
   meta = eval.make_meta(
-    arena_len=s, plan_len=8, device=device, planning_enabled=planning_enabled)
+    arena_len=s, plan_len=plan_len, device=device, planning_enabled=planning_enabled)
   model = eval.build_model(meta=meta, hidden_size=hidden_size)
   fixed_mazes = env.build_fixed_maze_arenas(s, batch_size)
 

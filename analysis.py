@@ -26,10 +26,10 @@ def analysis_scalar(xs, ys, ylab, save_p, ylim=None):
   if save_p is not None:
     f.savefig(os.path.join(save_p, f'{ylab}.png'))
 
-def analysis_multi(xs, zs, by, ylab, save_p, ylim=None):
+def analysis_multi(xs, ys, by, ylab, save_p, ylim=None):
   f = plt.figure(1)
   plt.clf()
-  h = plt.plot(xs, zs)
+  h = plt.plot(xs, ys)
   plt.ylabel(ylab)
   num_lines = len(by)
   cmap = plt.get_cmap('spring', num_lines)(np.arange(num_lines))[:, :3]
@@ -45,7 +45,7 @@ def analysis_multi(xs, zs, by, ylab, save_p, ylim=None):
     f.savefig(os.path.join(save_p, f'{ylab}.png'))
 
 if __name__ == '__main__':
-  subdir = '60'
+  subdir = '100'
   save_p = os.path.join(ROOT_P, 'plots', subdir)
   if save_p is not None: os.makedirs(save_p, exist_ok=True)
 
@@ -66,7 +66,7 @@ if __name__ == '__main__':
     'policy_entropies': [np.nanmean(res[i]['policy_entropies'], axis=0) for i in ri]
   })
 
-  mask = df['subdir'] == 'plan-yes-full-60'
+  mask = df['subdir'] == 'plan-yes-full'
   subset = df.loc[mask, :]
 
   entropies = np.stack(subset['policy_entropies'].values)

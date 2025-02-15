@@ -31,7 +31,7 @@ class EpisodeResult:
 class EpisodeParams:
   num_rollouts_per_planning_action: int = 1
   force_rollouts_at_start_of_exploit_phase: bool = False
-  verbose: int = 2
+  verbose: int = 0
 
 @dataclass
 class Meta:

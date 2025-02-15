@@ -13,6 +13,9 @@ def load_checkpoint(cp_p: str) -> Tuple[AgentModel, eval.Meta, List[env.Arena]]:
   meta = sd['meta']
   return model, meta, sd['mazes']
 
+def compute_value_function_error(rews: torch.Tensor, vs: torch.Tensor):
+  import pdb; pdb.set_trace()
+
 def find_rewards(rews: torch.Tensor):
   trials = []
   for i in range(rews.shape[0]):
@@ -47,11 +50,12 @@ def exploit_reward_state_prediction_accuracy(
 # -------------------------------------------------------------------------------------
 
 def evaluate_trained():
+  save = True
   batch_size = int(1e3)
   arena_len = 4
   mazes = env.build_maze_arenas(arena_len, batch_size)
 
-  subdir = 'plan-yes-full-60'
+  subdir = 'plan-yes-full-short-rollouts'
   cp_dir = os.path.join(os.getcwd(), 'checkpoints', subdir)
   dst_dir = os.path.join(os.getcwd(), 'results')
 
@@ -76,6 +80,7 @@ def evaluate_trained():
     first_exploit = find_first_exploit(ri)
     exploit_acc = exploit_reward_state_prediction_accuracy(
       first_exploit, res.reward_locs, res.predicted_rewards)
+    # v_errors = compute_value_function_error(res.rewards, res.v)
     
     num_entropy_rollouts, policy_entropies = evaluate_policy_entropy(model, meta, mazes)
     
@@ -90,14 +95,15 @@ def evaluate_trained():
       'subdirectory': subdir
     }
 
-    torch.save({'row': row}, os.path.join(dst_dir, f'evaluation-{subdir}-{cp_f}'))
+    if save:
+      torch.save({'row': row}, os.path.join(dst_dir, f'evaluation-{subdir}-{cp_f}'))
 
 # -------------------------------------------------------------------------------------
 
 def evaluate_policy_entropy(model: AgentModel, meta: eval.Meta, mazes: List[env.Arena]):
   batch_size = len(mazes)
 
-  num_rollouts = [*range(4, 12)]
+  num_rollouts = [*range(1, 12)]
   entropies = torch.zeros((batch_size, len(num_rollouts))) + torch.nan
 
   for it in range(len(num_rollouts)):
