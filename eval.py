@@ -30,6 +30,8 @@ class EpisodeResult:
 @dataclass
 class EpisodeParams:
   num_rollouts_per_planning_action: int = 1
+  num_ticks_per_step: int = 1
+  num_ticks_per_step_only_applies_at_start_of_exploit_phase: bool = False # @TODO: Not implemented
   force_rollouts_at_start_of_exploit_phase: bool = False
   verbose: int = 0
 
@@ -152,14 +154,16 @@ def prior_loss(meta: Meta, log_pi: torch.Tensor, active: torch.Tensor):
   lprior = torch.sum(torch.exp(log_pi) * (logp - log_pi))
   return lprior
 
-def forward_agent_model(*, meta: Meta, model: AgentModel, x: torch.Tensor, h0: torch.Tensor):
+def forward_agent_model(
+    *, meta: Meta, model: AgentModel, x: torch.Tensor, h_rnn: torch.Tensor, num_ticks: int):
   """
   a2c.jl/forward_modular
   """
   def _policy_subset(log_pi_v): return log_pi_v[:, :meta.num_actions]
   def _v_subset(log_pi_v): return log_pi_v[:, meta.num_actions]
 
-  h_rnn, ytemp = model.rnn(x, h0)
+  for _ in range(num_ticks):
+    h_rnn, ytemp = model.rnn(x, h_rnn)
   log_pi_v = model.policy(ytemp)
   log_pi = _policy_subset(log_pi_v)
   v = _v_subset(log_pi_v)
@@ -313,10 +317,15 @@ def new_state_not_at_reward(n: int, rew_loc: torch.Tensor):
 def run_episode(
     meta: Meta, model: AgentModel, mazes: List[env.Arena], 
     params: EpisodeParams = EpisodeParams()) -> EpisodeResult:
-  #
+  """
+  """
   assert params.num_rollouts_per_planning_action > 0, \
     'Expected at least 1 rollout per planning action'
-
+  
+  assert not params.num_ticks_per_step_only_applies_at_start_of_exploit_phase, \
+    'Not yet implemented'
+  """
+  """
   batch_size = len(mazes)
 
   wall_clock_t0 = time_fn()
@@ -357,7 +366,8 @@ def run_episode(
       time=time, plan_input=plan_input)
     
     # perform a step of recurrent processing
-    h_rnn, log_pi, v, pred_output, a1 = forward_agent_model(meta=meta, model=model, x=x, h0=h_rnn)
+    h_rnn, log_pi, v, pred_output, a1 = forward_agent_model(
+      meta=meta, model=model, x=x, h_rnn=h_rnn, num_ticks=params.num_ticks_per_step)
     pred_state, pred_reward = decompose_prediction_output(meta, pred_output)
 
     # update the agent's state, when the chosen action is concrete

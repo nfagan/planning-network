@@ -14,7 +14,7 @@ def load_checkpoint(cp_p: str) -> Tuple[AgentModel, eval.Meta, List[env.Arena]]:
   return model, meta, sd['mazes']
 
 def compute_value_function_error(rews: torch.Tensor, vs: torch.Tensor):
-  import pdb; pdb.set_trace()
+  raise NotImplementedError
 
 def find_rewards(rews: torch.Tensor):
   trials = []
@@ -50,57 +50,87 @@ def exploit_reward_state_prediction_accuracy(
 # -------------------------------------------------------------------------------------
 
 def evaluate_trained():
+  dst_dir = os.path.join(os.getcwd(), 'results')
+  cp_root_dir = os.path.join(os.getcwd(), 'checkpoints')
+
   save = True
   batch_size = int(1e3)
   arena_len = 4
   mazes = env.build_maze_arenas(arena_len, batch_size)
-
-  subdir = 'plan-yes-full-short-rollouts'
-  cp_dir = os.path.join(os.getcwd(), 'checkpoints', subdir)
-  dst_dir = os.path.join(os.getcwd(), 'results')
-
-  # cp_inds = np.arange(0, int(140e3)+1, int(5e3))
-  cp_inds = np.arange(0, int(195e3)+1, int(5e3))
-  cp_inds = np.array([*cp_inds, int(200e3 - 1)])
   ep_p = eval.EpisodeParams(verbose=0)
 
-  tot_experience = cp_inds * 40 # @TODO: This batch size was fixed during training
+  cp_subdirs = [
+    'plan-yes-full-short-rollouts',
+    'plan-yes-full',
+    'plan-yes-full-60',
+  ]
 
-  for i in range(len(cp_inds)):
-    print(f'{i+1} of {len(cp_inds)}')
+  cp_ind_sets = [
+    np.array([*np.arange(0, int(195e3)+1, int(5e3)), int(200e3 - 1)])
+  ] * len(cp_subdirs)
 
-    cp_f = f'cp-{cp_inds[i]}.pth'
-    cp_p = os.path.join(cp_dir, cp_f)
-    model, meta, cp_mazes = load_checkpoint(cp_p)
+  # cp_ind_sets[0] = cp_ind_sets[0][-2:]
 
-    res = eval.run_episode(meta, model, mazes, params=ep_p)
-    train_res = eval.run_episode(meta, model, cp_mazes, params=ep_p)
+  for si, subdir in enumerate(cp_subdirs):
+    print(f'{subdir} ({si+1} of {len(cp_subdirs)})')
 
-    ri = find_rewards(res.rewards)
-    first_exploit = find_first_exploit(ri)
-    exploit_acc = exploit_reward_state_prediction_accuracy(
-      first_exploit, res.reward_locs, res.predicted_rewards)
-    # v_errors = compute_value_function_error(res.rewards, res.v)
-    
-    num_entropy_rollouts, policy_entropies = evaluate_policy_entropy(model, meta, mazes)
-    
-    row = {
-      'res': res,
-      'train_res': train_res,
-      'first_exploit': first_exploit,
-      'exploit_acc': exploit_acc,
-      'experience': tot_experience[i],
-      'num_entropy_rollouts': num_entropy_rollouts,
-      'policy_entropies': policy_entropies,
-      'subdirectory': subdir
-    }
+    cp_inds = cp_ind_sets[si]
+    tot_experience = cp_inds * 40 # @TODO: This batch size was fixed during training
 
-    if save:
-      torch.save({'row': row}, os.path.join(dst_dir, f'evaluation-{subdir}-{cp_f}'))
+    for i in range(len(cp_inds)):
+      print(f'\t{i+1} of {len(cp_inds)}')
+
+      cp_f = f'cp-{cp_inds[i]}.pth'
+      cp_p = os.path.join(os.path.join(cp_root_dir, subdir, cp_f))
+      model, meta, cp_mazes = load_checkpoint(cp_p)
+
+      res = eval.run_episode(meta, model, mazes, params=ep_p)
+      train_res = eval.run_episode(meta, model, cp_mazes, params=ep_p)
+
+      ri = find_rewards(res.rewards)
+      first_exploit = find_first_exploit(ri)
+      exploit_acc = exploit_reward_state_prediction_accuracy(
+        first_exploit, res.reward_locs, res.predicted_rewards)
+      # v_errors = compute_value_function_error(res.rewards, res.v)
+      
+      num_entropy_rollouts, policy_entropies = evaluate_forced_rollouts(model, meta, mazes)
+      num_ticks, forced_ticks_mean_rew = evaluate_forced_num_ticks(model, meta, mazes)
+      
+      row = {
+        'res': res,
+        'train_res': train_res,
+        'first_exploit': first_exploit,
+        'exploit_acc': exploit_acc,
+        'experience': tot_experience[i],
+        'num_forced_rollouts': num_entropy_rollouts,
+        'forced_rollout_policy_entropies': policy_entropies,
+        'num_ticks': num_ticks,
+        'forced_ticks_mean_reward': forced_ticks_mean_rew,
+        'subdirectory': subdir
+      }
+
+      if save:
+        torch.save({'row': row}, os.path.join(dst_dir, f'evaluation-{subdir}-{cp_f}'))
 
 # -------------------------------------------------------------------------------------
 
-def evaluate_policy_entropy(model: AgentModel, meta: eval.Meta, mazes: List[env.Arena]):
+def evaluate_forced_num_ticks(model: AgentModel, meta: eval.Meta, mazes: List[env.Arena]):
+  batch_size = len(mazes)
+
+  num_ticks = [*range(1, 8)]
+  mean_rew = torch.zeros((batch_size, len(num_ticks))) + torch.nan
+
+  for it in range(len(num_ticks)):
+    ep_p = eval.EpisodeParams(num_ticks_per_step=num_ticks[it], verbose=0)
+    res = eval.run_episode(meta, model, mazes, params=ep_p)
+    rews = torch.sum(res.rewards * res.actives, dim=1)
+    mean_rew[:, it] = rews
+
+  return np.array(num_ticks), mean_rew.detach().cpu().numpy()
+
+# -------------------------------------------------------------------------------------
+
+def evaluate_forced_rollouts(model: AgentModel, meta: eval.Meta, mazes: List[env.Arena]):
   batch_size = len(mazes)
 
   num_rollouts = [*range(1, 12)]
@@ -128,17 +158,5 @@ def evaluate_policy_entropy(model: AgentModel, meta: eval.Meta, mazes: List[env.
 
   return np.array(num_rollouts), entropies.detach().cpu().numpy()
 
-def do_evaluate_policy_entropy():
-  subdir = 'plan-yes-full'
-  cp_dir = os.path.join(os.getcwd(), 'checkpoints', subdir)
-
-  cp_ind = int(200e3 - 1)
-  cp_f = f'cp-{cp_ind}.pth'
-  cp_p = os.path.join(cp_dir, cp_f)
-  model, meta, _ = load_checkpoint(cp_p)
-
-  num_rollouts, entropies = evaluate_policy_entropy(model, meta, env.build_maze_arenas(4, int(1e3)))
-
 if __name__ == '__main__':
   evaluate_trained()
-  # do_evaluate_policy_entropy()
