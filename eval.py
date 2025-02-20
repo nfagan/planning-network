@@ -155,15 +155,22 @@ def prior_loss(meta: Meta, log_pi: torch.Tensor, active: torch.Tensor):
   return lprior
 
 def forward_agent_model(
-    *, meta: Meta, model: AgentModel, x: torch.Tensor, h_rnn: torch.Tensor, num_ticks: int):
+    *, meta: Meta, model: AgentModel, x: torch.Tensor, h_rnn: torch.Tensor, num_ticks: torch.Tensor):
   """
   a2c.jl/forward_modular
   """
   def _policy_subset(log_pi_v): return log_pi_v[:, :meta.num_actions]
   def _v_subset(log_pi_v): return log_pi_v[:, meta.num_actions]
 
-  for _ in range(num_ticks):
-    h_rnn, ytemp = model.rnn(x, h_rnn)
+  max_num_ticks = torch.max(num_ticks)
+
+  for i in range(max_num_ticks):
+    if i == 0:
+      h_rnn, ytemp = model.rnn(x, h_rnn)
+    else:
+      ri = i < num_ticks
+      h_rnn[ri, :], ytemp[ri, :] = model.rnn(x[ri, :], h_rnn[ri, :])
+
   log_pi_v = model.policy(ytemp)
   log_pi = _policy_subset(log_pi_v)
   v = _v_subset(log_pi_v)
@@ -321,9 +328,6 @@ def run_episode(
   """
   assert params.num_rollouts_per_planning_action > 0, \
     'Expected at least 1 rollout per planning action'
-  
-  assert not params.num_ticks_per_step_only_applies_at_start_of_exploit_phase, \
-    'Not yet implemented'
   """
   """
   batch_size = len(mazes)
@@ -365,9 +369,19 @@ def run_episode(
       prev_rewards=prev_rewards, shot=F.one_hot(s, meta.num_states), 
       time=time, plan_input=plan_input)
     
+    # determine the number of ticks of recurrent processing to perform
+    num_ticks_per_step = torch.ones((batch_size,), dtype=torch.long).to(meta.device)
+    if not params.num_ticks_per_step_only_applies_at_start_of_exploit_phase:
+      # always use `params.num_ticks_per_step` ticks
+      num_ticks_per_step = num_ticks_per_step * params.num_ticks_per_step
+    elif t > 0:
+      # only use `params.num_ticks_per_step` ticks at the start of the exploit phase.
+      # is_exploit is computed later (for the t+1 th time step), so only valid when t > 0
+      num_ticks_per_step[is_exploit] = params.num_ticks_per_step
+
     # perform a step of recurrent processing
     h_rnn, log_pi, v, pred_output, a1 = forward_agent_model(
-      meta=meta, model=model, x=x, h_rnn=h_rnn, num_ticks=params.num_ticks_per_step)
+      meta=meta, model=model, x=x, h_rnn=h_rnn, num_ticks=num_ticks_per_step)
     pred_state, pred_reward = decompose_prediction_output(meta, pred_output)
 
     # update the agent's state, when the chosen action is concrete

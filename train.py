@@ -3,6 +3,7 @@ import env
 from model import AgentModel
 import torch
 import os
+import time
 
 def save_checkpoint(model: AgentModel, mazes, meta, ep_p: eval.EpisodeParams, save_p, fname):
   if not os.path.exists(save_p): os.makedirs(save_p, exist_ok=True)
@@ -12,18 +13,20 @@ def save_checkpoint(model: AgentModel, mazes, meta, ep_p: eval.EpisodeParams, sa
   }
   torch.save(sd, os.path.join(save_p, fname))
 
+def b2s(b: bool): return 'yes' if b else 'no'
+
 def main():
   save = True
   prefer_gpu = False
-  planning_enabled = True
+  planning_enabled = False
   use_fixed_mazes = False
   s = 4 # arena side length
   batch_size = 40
   num_episodes = 50000 * 4
   hidden_size = 100
-  # plan_len = 8  # long
-  plan_len = 4  # short
-  subdir = 'plan-yes-full-short-rollouts'
+  plan_len = 8  # long
+  # plan_len = 4  # short
+  subdir = f'plan_{b2s(planning_enabled)}-hs_{hidden_size}-plan_len_{plan_len}'
   device = torch.device('cuda:0' if prefer_gpu and torch.cuda.is_available() else 'cpu')
 
   ep_p = eval.EpisodeParams(
@@ -39,8 +42,11 @@ def main():
 
   optim = torch.optim.Adam(lr=1e-3, params=model.parameters())
 
+  t0 = time.time()
   for e in range(num_episodes):
-    print(f'{e+1} of {num_episodes}')
+    tot_t = time.time() - t0
+    print(f'{e+1} of {num_episodes} ({((e+1)/num_episodes*100):.3f}%); {tot_t:.3f}s')
+
     mazes = fixed_mazes if use_fixed_mazes else env.build_maze_arenas(s, batch_size)
     res = eval.run_episode(meta, model, mazes, params=ep_p)
     loss = res.loss

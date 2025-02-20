@@ -68,7 +68,8 @@ def to_data_frame(res):
 
 def main():
   root_p = os.getcwd()
-  cp_subdir_name = 'plan-yes-full-short-rollouts'
+  # cp_subdir_name = 'plan-yes-full-short-rollouts'
+  cp_subdir_name = 'plan_no-hs_100-plan_len_8'
   
   save_p = os.path.join(root_p, 'plots', cp_subdir_name)
   if save_p is not None: os.makedirs(save_p, exist_ok=True)

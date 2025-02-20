@@ -59,11 +59,12 @@ def evaluate_trained():
   mazes = env.build_maze_arenas(arena_len, batch_size)
   ep_p = eval.EpisodeParams(verbose=0)
 
-  cp_subdirs = [
-    'plan-yes-full-short-rollouts',
-    'plan-yes-full',
-    'plan-yes-full-60',
-  ]
+  # cp_subdirs = [
+  #   'plan-yes-full-short-rollouts',
+  #   'plan-yes-full',
+  #   'plan-yes-full-60',
+  # ]
+  cp_subdirs = ['plan_no-hs_100-plan_len_8']
 
   cp_ind_sets = [
     np.array([*np.arange(0, int(195e3)+1, int(5e3)), int(200e3 - 1)])
@@ -93,8 +94,8 @@ def evaluate_trained():
         first_exploit, res.reward_locs, res.predicted_rewards)
       # v_errors = compute_value_function_error(res.rewards, res.v)
       
-      num_entropy_rollouts, policy_entropies = evaluate_forced_rollouts(model, meta, mazes)
       num_ticks, forced_ticks_mean_rew = evaluate_forced_num_ticks(model, meta, mazes)
+      num_entropy_rollouts, policy_entropies = evaluate_forced_rollouts(model, meta, mazes)
       
       row = {
         'res': res,
@@ -121,7 +122,10 @@ def evaluate_forced_num_ticks(model: AgentModel, meta: eval.Meta, mazes: List[en
   mean_rew = torch.zeros((batch_size, len(num_ticks))) + torch.nan
 
   for it in range(len(num_ticks)):
-    ep_p = eval.EpisodeParams(num_ticks_per_step=num_ticks[it], verbose=0)
+    ep_p = eval.EpisodeParams(
+      num_ticks_per_step=num_ticks[it], 
+      num_ticks_per_step_only_applies_at_start_of_exploit_phase=True
+    )
     res = eval.run_episode(meta, model, mazes, params=ep_p)
     rews = torch.sum(res.rewards * res.actives, dim=1)
     mean_rew[:, it] = rews
