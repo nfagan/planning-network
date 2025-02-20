@@ -59,12 +59,12 @@ def evaluate_trained():
   mazes = env.build_maze_arenas(arena_len, batch_size)
   ep_p = eval.EpisodeParams(verbose=0)
 
-  # cp_subdirs = [
-  #   'plan-yes-full-short-rollouts',
-  #   'plan-yes-full',
-  #   'plan-yes-full-60',
-  # ]
-  cp_subdirs = ['plan_no-hs_100-plan_len_8']
+  cp_subdirs = [
+    'plan-yes-full-short-rollouts',
+    'plan-yes-full',
+    'plan-yes-full-60',
+    'plan_no-hs_100-plan_len_8'
+  ]
 
   cp_ind_sets = [
     np.array([*np.arange(0, int(195e3)+1, int(5e3)), int(200e3 - 1)])

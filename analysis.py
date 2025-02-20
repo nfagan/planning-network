@@ -5,6 +5,13 @@ import matplotlib.pyplot as plt
 from typing import List
 import os
 import glob
+from dataclasses import dataclass
+from typing import Optional
+
+@dataclass
+class Context:
+  save_p: Optional[str]
+  show_plot: bool
 
 def load_results(root_p):
   eval_p = os.path.join(root_p, 'results')
@@ -13,18 +20,18 @@ def load_results(root_p):
   res = sorted(res, key=lambda x: x['experience'])
   return res
 
-def analysis_scalar(xs, ys, ylab, save_p, ylim=None):
+def analysis_scalar(xs, ys, ylab, context: Context, ylim=None):
   f = plt.figure(1)
   plt.clf()
   plt.plot(xs, ys)
   plt.ylabel(ylab)
   if ylim is not None: plt.ylim(ylim)
-  plt.show()
+  if context.show_plot: plt.show()
   plt.draw()
-  if save_p is not None:
-    f.savefig(os.path.join(save_p, f'{ylab}.png'))
+  if context.save_p is not None:
+    f.savefig(os.path.join(context.save_p, f'{ylab}.png'))
 
-def analysis_multi(xs, ys, by, ylab, save_p, ylim=None):
+def analysis_multi(xs, ys, by, ylab, context: Context, ylim=None):
   f = plt.figure(1)
   plt.clf()
   h = plt.plot(xs, ys)
@@ -35,12 +42,11 @@ def analysis_multi(xs, ys, by, ylab, save_p, ylim=None):
     h[i].set_color(cmap[i, :])
     h[i].set_label(f'{by[i]}')
   if ylim is not None: plt.ylim(ylim)
-  # import pdb; pdb.set_trace()
   plt.legend()
-  plt.show()
+  if context.show_plot: plt.show()
   plt.draw()
-  if save_p is not None:
-    f.savefig(os.path.join(save_p, f'{ylab}.png'))
+  if context.save_p is not None:
+    f.savefig(os.path.join(context.save_p, f'{ylab}.png'))
 
 def to_data_frame(res):
   """
@@ -68,32 +74,42 @@ def to_data_frame(res):
 
 def main():
   root_p = os.getcwd()
-  # cp_subdir_name = 'plan-yes-full-short-rollouts'
-  cp_subdir_name = 'plan_no-hs_100-plan_len_8'
-  
-  save_p = os.path.join(root_p, 'plots', cp_subdir_name)
-  if save_p is not None: os.makedirs(save_p, exist_ok=True)
 
-  res = load_results(root_p)
-  df = to_data_frame(res)
+  cp_subdir_names = [
+    'plan-yes-full-short-rollouts',
+    'plan-yes-full',
+    'plan-yes-full-60',
+    'plan_no-hs_100-plan_len_8'
+  ]
 
-  mask = df['subdir'] == cp_subdir_name
-  subset = df.loc[mask, :]
+  for si, cp_subdir_name in enumerate(cp_subdir_names):
+    print(f'{cp_subdir_name} ({si+1} of {len(cp_subdir_names)})')
 
-  entropies = np.stack(subset['policy_entropies'].values)
-  num_rollouts = subset['num_rollouts'].iloc[0]
-  rollouts_str = [f'# Rollouts = {x}' for x in num_rollouts]
+    save_p = os.path.join(root_p, 'plots', cp_subdir_name)
+    if save_p is not None: os.makedirs(save_p, exist_ok=True)
 
-  mean_rews = np.stack(subset['forced_ticks_mean_reward'].values)
-  num_ticks = subset['num_ticks'].iloc[0]
-  ticks_str = [f'# ticks = {x}' for x in num_ticks]
+    ctx = Context(save_p=save_p, show_plot=False)
 
-  analysis_multi(subset['xs'], entropies, rollouts_str, 'entropy', save_p)
-  analysis_multi(subset['xs'], mean_rews, ticks_str, 'ticks mean reward', save_p)
-  analysis_scalar(subset['xs'], subset['p_plans'], 'p(plan)', save_p, ylim=[0., 0.6])
-  analysis_scalar(subset['xs'], subset['earned_rew'], 'mean reward', save_p, ylim=[0., 8.5])
-  analysis_scalar(subset['xs'], subset['reward_acc'], 'exploit reward pred acc', save_p)
-  analysis_scalar(subset['xs'], subset['state_acc'], 'state pred acc', save_p)
+    res = load_results(root_p)
+    df = to_data_frame(res)
+
+    mask = df['subdir'] == cp_subdir_name
+    subset = df.loc[mask, :]
+
+    entropies = np.stack(subset['policy_entropies'].values)
+    num_rollouts = subset['num_rollouts'].iloc[0]
+    rollouts_str = [f'# Rollouts = {x}' for x in num_rollouts]
+
+    mean_rews = np.stack(subset['forced_ticks_mean_reward'].values)
+    num_ticks = subset['num_ticks'].iloc[0]
+    ticks_str = [f'# ticks = {x}' for x in num_ticks]
+
+    analysis_multi(subset['xs'], entropies, rollouts_str, 'entropy', ctx)
+    analysis_multi(subset['xs'], mean_rews, ticks_str, 'ticks mean reward', ctx)
+    analysis_scalar(subset['xs'], subset['p_plans'], 'p(plan)', ctx, ylim=[0., 0.6])
+    analysis_scalar(subset['xs'], subset['earned_rew'], 'mean reward', ctx, ylim=[0., 8.5])
+    analysis_scalar(subset['xs'], subset['reward_acc'], 'exploit reward pred acc', ctx)
+    analysis_scalar(subset['xs'], subset['state_acc'], 'state pred acc', ctx)
 
 if __name__ == '__main__':
   main()
