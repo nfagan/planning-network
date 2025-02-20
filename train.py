@@ -26,12 +26,17 @@ def main():
   hidden_size = 100
   plan_len = 8  # long
   # plan_len = 4  # short
-  subdir = f'plan_{b2s(planning_enabled)}-hs_{hidden_size}-plan_len_{plan_len}'
+  rand_ticks = True
+  num_ticks_per_step = 16
+  subdir = f'plan_{b2s(planning_enabled)}-hs_{hidden_size}-' + \
+    f'plan_len_{plan_len}-rand_ticks_{b2s(rand_ticks)}-num_ticks_{num_ticks_per_step}'
   device = torch.device('cuda:0' if prefer_gpu and torch.cuda.is_available() else 'cpu')
 
   ep_p = eval.EpisodeParams(
     force_rollouts_at_start_of_exploit_phase=False,
     num_rollouts_per_planning_action=1,
+    num_ticks_per_step_is_randomized=rand_ticks,
+    num_ticks_per_step=num_ticks_per_step,
     verbose=2
   )
 
