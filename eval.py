@@ -373,10 +373,11 @@ def run_episode(
     # determine the number of ticks of recurrent processing to perform
     num_ticks_per_step = torch.ones((batch_size,), dtype=torch.long).to(meta.device)
     if not params.num_ticks_per_step_only_applies_at_start_of_exploit_phase:
-      # always use `params.num_ticks_per_step` ticks
       if params.num_ticks_per_step_is_randomized:
-        num_ticks_per_step[:] = torch.randint(0, params.num_ticks_per_step, (batch_size,))
+        # use up to `params.num_ticks_per_step` ticks
+        num_ticks_per_step[:] = torch.randint(1, params.num_ticks_per_step, (batch_size,))
       else:
+        # always use `params.num_ticks_per_step` ticks
         num_ticks_per_step = num_ticks_per_step * params.num_ticks_per_step
     elif t > 0:
       # only use `params.num_ticks_per_step` ticks at the start of the exploit phase.
