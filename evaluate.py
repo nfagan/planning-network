@@ -1,11 +1,24 @@
 from model import AgentModel
-from utility import instantiate_model_from_checkpoint
+from utility import instantiate_model_from_checkpoint, split_array_indices
 import eval
 import env
 import torch
 import numpy as np
 from typing import List, Tuple
 import os
+from dataclasses import dataclass
+from multiprocessing import Process
+
+@dataclass
+class Context:
+  dst_dir = os.path.join(os.getcwd(), 'results')
+  cp_root_dir = os.path.join(os.getcwd(), 'checkpoints')
+  save = True
+  num_processes = 8
+  batch_size: int
+  arena_len: int
+  mazes: List[env.Arena]
+  ep_p: eval.EpisodeParams
 
 def load_checkpoint(cp_p: str) -> Tuple[AgentModel, eval.Meta, List[env.Arena]]:
   sd = torch.load(cp_p)
@@ -47,84 +60,16 @@ def exploit_reward_state_prediction_accuracy(
     d += pred.numel()
   return 0. if d == 0 else n/d
 
-# -------------------------------------------------------------------------------------
-
-def evaluate_trained():
-  dst_dir = os.path.join(os.getcwd(), 'results')
-  cp_root_dir = os.path.join(os.getcwd(), 'checkpoints')
-
-  save = True
-  batch_size = int(1e3)
-  arena_len = 4
-  mazes = env.build_maze_arenas(arena_len, batch_size)
-  ep_p = eval.EpisodeParams(verbose=0)
-
-  cp_subdirs = [
-    'plan-yes-full-short-rollouts',
-    'plan-yes-full',
-    'plan-yes-full-60',
-    'plan_no-hs_100-plan_len_8'
-  ]
-
-  cp_ind_sets = [
-    np.array([*np.arange(0, int(195e3)+1, int(5e3)), int(200e3 - 1)])
-  ] * len(cp_subdirs)
-
-  # cp_ind_sets[0] = cp_ind_sets[0][-2:]
-
-  for si, subdir in enumerate(cp_subdirs):
-    print(f'{subdir} ({si+1} of {len(cp_subdirs)})')
-
-    cp_inds = cp_ind_sets[si]
-    tot_experience = cp_inds * 40 # @TODO: This batch size was fixed during training
-
-    for i in range(len(cp_inds)):
-      print(f'\t{i+1} of {len(cp_inds)}')
-
-      cp_f = f'cp-{cp_inds[i]}.pth'
-      cp_p = os.path.join(os.path.join(cp_root_dir, subdir, cp_f))
-      model, meta, cp_mazes = load_checkpoint(cp_p)
-
-      res = eval.run_episode(meta, model, mazes, params=ep_p)
-      train_res = eval.run_episode(meta, model, cp_mazes, params=ep_p)
-
-      ri = find_rewards(res.rewards)
-      first_exploit = find_first_exploit(ri)
-      exploit_acc = exploit_reward_state_prediction_accuracy(
-        first_exploit, res.reward_locs, res.predicted_rewards)
-      # v_errors = compute_value_function_error(res.rewards, res.v)
-      
-      num_ticks, forced_ticks_mean_rew = evaluate_forced_num_ticks(model, meta, mazes)
-      num_entropy_rollouts, policy_entropies = evaluate_forced_rollouts(model, meta, mazes)
-      
-      row = {
-        'res': res,
-        'train_res': train_res,
-        'first_exploit': first_exploit,
-        'exploit_acc': exploit_acc,
-        'experience': tot_experience[i],
-        'num_forced_rollouts': num_entropy_rollouts,
-        'forced_rollout_policy_entropies': policy_entropies,
-        'num_ticks': num_ticks,
-        'forced_ticks_mean_reward': forced_ticks_mean_rew,
-        'subdirectory': subdir
-      }
-
-      if save:
-        torch.save({'row': row}, os.path.join(dst_dir, f'evaluation-{subdir}-{cp_f}'))
-
-# -------------------------------------------------------------------------------------
-
 def evaluate_forced_num_ticks(model: AgentModel, meta: eval.Meta, mazes: List[env.Arena]):
   batch_size = len(mazes)
 
-  num_ticks = [*range(1, 8)]
+  num_ticks = [*range(1, 9)]
   mean_rew = torch.zeros((batch_size, len(num_ticks))) + torch.nan
 
   for it in range(len(num_ticks)):
     ep_p = eval.EpisodeParams(
       num_ticks_per_step=num_ticks[it], 
-      num_ticks_per_step_only_applies_at_start_of_exploit_phase=True
+      num_ticks_per_step_only_applies_at_start_of_exploit_phase=False
     )
     res = eval.run_episode(meta, model, mazes, params=ep_p)
     rews = torch.sum(res.rewards * res.actives, dim=1)
@@ -162,5 +107,91 @@ def evaluate_forced_rollouts(model: AgentModel, meta: eval.Meta, mazes: List[env
 
   return np.array(num_rollouts), entropies.detach().cpu().numpy()
 
+# -------------------------------------------------------------------------------------
+
+def evaluate_one(
+  ctx: Context, model: AgentModel, meta: eval.Meta, cp_mazes: List[env.Arena]):
+  """
+  """
+  res = eval.run_episode(meta, model, ctx.mazes, params=ctx.ep_p)
+  train_res = eval.run_episode(meta, model, cp_mazes, params=ctx.ep_p)
+
+  ri = find_rewards(res.rewards)
+  first_exploit = find_first_exploit(ri)
+  exploit_acc = exploit_reward_state_prediction_accuracy(
+    first_exploit, res.reward_locs, res.predicted_rewards)
+  # v_errors = compute_value_function_error(res.rewards, res.v)
+  
+  num_ticks, forced_ticks_mean_rew = evaluate_forced_num_ticks(model, meta, ctx.mazes)
+  num_entropy_rollouts, policy_entropies = evaluate_forced_rollouts(model, meta, ctx.mazes)
+  
+  row = {
+    'res': res,
+    'train_res': train_res,
+    'first_exploit': first_exploit,
+    'exploit_acc': exploit_acc,
+    'num_forced_rollouts': num_entropy_rollouts,
+    'forced_rollout_policy_entropies': policy_entropies,
+    'num_ticks': num_ticks,
+    'forced_ticks_mean_reward': forced_ticks_mean_rew,
+  }
+
+  return row
+
+def evaluate_n(ctx: Context, subdir: str, cp_inds: List[int], tot_experience: List[int]):
+  for i in range(len(cp_inds)):
+    print(f'\t{i+1} of {len(cp_inds)}')
+
+    cp_f = f'cp-{cp_inds[i]}.pth'
+    cp_p = os.path.join(os.path.join(ctx.cp_root_dir, subdir, cp_f))
+
+    model, meta, cp_mazes = load_checkpoint(cp_p)
+
+    row = evaluate_one(ctx, model, meta, cp_mazes)
+    row['subdirectory'] = subdir
+    row['experience'] = tot_experience[i]
+
+    if ctx.save:
+      torch.save({'row': row}, os.path.join(ctx.dst_dir, f'evaluation-{subdir}-{cp_f}'))
+
+def evaluate():
+  arena_len = 4
+  batch_size = int(1e3)
+
+  ctx = Context(
+    batch_size=batch_size,
+    arena_len=arena_len,
+    mazes=env.build_maze_arenas(arena_len, batch_size),
+    ep_p=eval.EpisodeParams(verbose=0),
+  )
+
+  cp_subdirs = [
+    # 'plan-yes-full-short-rollouts',
+    # 'plan-yes-full',
+    # 'plan-yes-full-60',
+    # 'plan_no-hs_100-plan_len_8',
+    'plan_no-hs_100-plan_len_8-rand_ticks_yes-num_ticks_16'
+  ]
+
+  cp_ind_sets = [
+    np.array([*np.arange(0, int(195e3)+1, int(5e3)), int(200e3 - 1)])
+  ] * len(cp_subdirs)
+
+  for si, subdir in enumerate(cp_subdirs):
+    print(f'{subdir} ({si+1} of {len(cp_subdirs)})')
+
+    cp_inds = cp_ind_sets[si]
+    tot_experience = cp_inds * 40 # @TODO: This batch size was fixed during training
+
+    if ctx.num_processes <= 0:
+      # no multiprocessing
+      evaluate_n(ctx, subdir, cp_inds, tot_experience)
+    else:
+      pi = split_array_indices(len(cp_inds), ctx.num_processes)
+      process_args = [(ctx, subdir, cp_inds[pi[i]], tot_experience[pi[i]]) for i in range(len(pi))]
+      processes = [Process(target=evaluate_n, args=args) for args in process_args]
+      for p in processes: p.start()
+      for p in processes: p.join()
+
 if __name__ == '__main__':
-  evaluate_trained()
+  evaluate()
