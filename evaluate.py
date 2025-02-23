@@ -15,6 +15,7 @@ class Context:
   cp_root_dir = os.path.join(os.getcwd(), 'checkpoints')
   save = True
   num_processes = 8
+  # num_processes = 0
   batch_size: int
   arena_len: int
   mazes: List[env.Arena]
@@ -60,7 +61,9 @@ def exploit_reward_state_prediction_accuracy(
     d += pred.numel()
   return 0. if d == 0 else n/d
 
-def evaluate_forced_num_ticks(model: AgentModel, meta: eval.Meta, mazes: List[env.Arena]):
+def evaluate_forced_num_ticks(
+  model: AgentModel, meta: eval.Meta, mazes: List[env.Arena], num_ticks_applies: int):
+  #
   batch_size = len(mazes)
 
   num_ticks = [*range(1, 9)]
@@ -68,8 +71,8 @@ def evaluate_forced_num_ticks(model: AgentModel, meta: eval.Meta, mazes: List[en
 
   for it in range(len(num_ticks)):
     ep_p = eval.EpisodeParams(
-      num_ticks_per_step=num_ticks[it], 
-      num_ticks_per_step_only_applies_at_start_of_exploit_phase=False
+      num_ticks_per_step=num_ticks[it],
+      num_ticks_per_step_applies=num_ticks_applies,
     )
     res = eval.run_episode(meta, model, mazes, params=ep_p)
     rews = torch.sum(res.rewards * res.actives, dim=1)
@@ -109,10 +112,7 @@ def evaluate_forced_rollouts(model: AgentModel, meta: eval.Meta, mazes: List[env
 
 # -------------------------------------------------------------------------------------
 
-def evaluate_one(
-  ctx: Context, model: AgentModel, meta: eval.Meta, cp_mazes: List[env.Arena]):
-  """
-  """
+def evaluate_one(ctx: Context, model: AgentModel, meta: eval.Meta, cp_mazes: List[env.Arena]):
   res = eval.run_episode(meta, model, ctx.mazes, params=ctx.ep_p)
   train_res = eval.run_episode(meta, model, cp_mazes, params=ctx.ep_p)
 
@@ -121,8 +121,15 @@ def evaluate_one(
   exploit_acc = exploit_reward_state_prediction_accuracy(
     first_exploit, res.reward_locs, res.predicted_rewards)
   # v_errors = compute_value_function_error(res.rewards, res.v)
-  
-  num_ticks, forced_ticks_mean_rew = evaluate_forced_num_ticks(model, meta, ctx.mazes)
+
+  _, once_randomly_forced_ticks_mean_rew = evaluate_forced_num_ticks(
+    model, meta, ctx.mazes, eval.EpisodeParams.NUM_TICKS_ONCE_RANDOMLY)
+  num_ticks, exploit_forced_ticks_mean_rew = evaluate_forced_num_ticks(
+    model, meta, ctx.mazes, eval.EpisodeParams.NUM_TICKS_EXPLOIT_ONLY)
+  _, always_forced_ticks_mean_rew = evaluate_forced_num_ticks(
+    model, meta, ctx.mazes, eval.EpisodeParams.NUM_TICKS_APPLIES_ALWAYS)
+  _, explore_forced_ticks_mean_rew = evaluate_forced_num_ticks(
+    model, meta, ctx.mazes, eval.EpisodeParams.NUM_TICKS_EXPLORE_ONLY)
   num_entropy_rollouts, policy_entropies = evaluate_forced_rollouts(model, meta, ctx.mazes)
   
   row = {
@@ -133,7 +140,10 @@ def evaluate_one(
     'num_forced_rollouts': num_entropy_rollouts,
     'forced_rollout_policy_entropies': policy_entropies,
     'num_ticks': num_ticks,
-    'forced_ticks_mean_reward': forced_ticks_mean_rew,
+    'exploit_only_forced_ticks_mean_reward': exploit_forced_ticks_mean_rew,
+    'explore_only_forced_ticks_mean_reward': explore_forced_ticks_mean_rew,
+    'once_randomly_forced_ticks_mean_reward': once_randomly_forced_ticks_mean_rew,
+    'always_forced_ticks_mean_reward': always_forced_ticks_mean_rew,
   }
 
   return row
@@ -166,10 +176,10 @@ def evaluate():
   )
 
   cp_subdirs = [
-    # 'plan-yes-full-short-rollouts',
-    # 'plan-yes-full',
-    # 'plan-yes-full-60',
-    # 'plan_no-hs_100-plan_len_8',
+    'plan-yes-full-short-rollouts',
+    'plan-yes-full',
+    'plan-yes-full-60',
+    'plan_no-hs_100-plan_len_8',
     'plan_no-hs_100-plan_len_8-rand_ticks_yes-num_ticks_16'
   ]
 

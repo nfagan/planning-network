@@ -2,11 +2,10 @@ import torch
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from typing import List
 import os
 import glob
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List
 
 @dataclass
 class Context:
@@ -67,7 +66,10 @@ def to_data_frame(res):
     'num_rollouts': [res[i]['num_forced_rollouts'] for i in ri],
     'policy_entropies': [np.nanmean(res[i]['forced_rollout_policy_entropies'], axis=0) for i in ri],
     'num_ticks': [res[i]['num_ticks'] for i in ri],
-    'forced_ticks_mean_reward': [np.nanmean(res[i]['forced_ticks_mean_reward'], axis=0) for i in ri],
+    'exploit_only_forced_ticks_mean_reward': [np.nanmean(res[i]['exploit_only_forced_ticks_mean_reward'], axis=0) for i in ri],
+    'explore_only_forced_ticks_mean_reward': [np.nanmean(res[i]['explore_only_forced_ticks_mean_reward'], axis=0) for i in ri],
+    'always_forced_ticks_mean_reward': [np.nanmean(res[i]['always_forced_ticks_mean_reward'], axis=0) for i in ri],
+    'once_randomly_forced_ticks_mean_reward': [np.nanmean(res[i]['once_randomly_forced_ticks_mean_reward'], axis=0) for i in ri],
   })
 
   return df
@@ -79,7 +81,8 @@ def main():
     'plan-yes-full-short-rollouts',
     'plan-yes-full',
     'plan-yes-full-60',
-    'plan_no-hs_100-plan_len_8'
+    'plan_no-hs_100-plan_len_8',
+    'plan_no-hs_100-plan_len_8-rand_ticks_yes-num_ticks_16'
   ]
 
   for si, cp_subdir_name in enumerate(cp_subdir_names):
@@ -100,16 +103,25 @@ def main():
     num_rollouts = subset['num_rollouts'].iloc[0]
     rollouts_str = [f'# Rollouts = {x}' for x in num_rollouts]
 
-    mean_rews = np.stack(subset['forced_ticks_mean_reward'].values)
+    exploit_only_mean_rews = np.stack(subset['exploit_only_forced_ticks_mean_reward'].values)
+    explore_only_mean_rews = np.stack(subset['explore_only_forced_ticks_mean_reward'].values)
+    random_once_mean_rews = np.stack(subset['once_randomly_forced_ticks_mean_reward'].values)
+    forced_ticks_mean_rews = np.stack(subset['always_forced_ticks_mean_reward'].values)
+    
     num_ticks = subset['num_ticks'].iloc[0]
     ticks_str = [f'# ticks = {x}' for x in num_ticks]
+    rew_y = [0., 10.]
+    xs = subset['xs']
 
-    analysis_multi(subset['xs'], entropies, rollouts_str, 'entropy', ctx)
-    analysis_multi(subset['xs'], mean_rews, ticks_str, 'ticks mean reward', ctx)
-    analysis_scalar(subset['xs'], subset['p_plans'], 'p(plan)', ctx, ylim=[0., 0.6])
-    analysis_scalar(subset['xs'], subset['earned_rew'], 'mean reward', ctx, ylim=[0., 8.5])
-    analysis_scalar(subset['xs'], subset['reward_acc'], 'exploit reward pred acc', ctx)
-    analysis_scalar(subset['xs'], subset['state_acc'], 'state pred acc', ctx)
+    analysis_multi(xs, entropies, rollouts_str, 'entropy', ctx)
+    analysis_multi(xs, random_once_mean_rews, ticks_str, 'ticks mean reward (randomly once)', ctx, ylim=rew_y)
+    analysis_multi(xs, exploit_only_mean_rews, ticks_str, 'ticks mean reward (exploit only)', ctx, ylim=rew_y)
+    analysis_multi(xs, explore_only_mean_rews, ticks_str, 'ticks mean reward (explore only)', ctx, ylim=rew_y)
+    analysis_multi(xs, forced_ticks_mean_rews, ticks_str, 'ticks mean reward', ctx, ylim=rew_y)
+    analysis_scalar(xs, subset['p_plans'], 'p(plan)', ctx, ylim=[0., 0.6])
+    analysis_scalar(xs, subset['earned_rew'], 'mean reward', ctx, ylim=[0., 8.5])
+    analysis_scalar(xs, subset['reward_acc'], 'exploit reward pred acc', ctx)
+    analysis_scalar(xs, subset['state_acc'], 'state pred acc', ctx)
 
 if __name__ == '__main__':
   main()
