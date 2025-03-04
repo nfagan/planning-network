@@ -511,6 +511,10 @@ def run_episode(
   with torch.no_grad():
     ds = td_error(rews, vs)
 
+  """
+  compute terms of the loss. elements are accumulated over steps within an episode and then averaged
+  over episodes
+  """
   N = ds.shape[1]
   for t in range(N):
     vt = ds[:, t] * vs[:, t] # value function (batch)
@@ -519,7 +523,6 @@ def run_episode(
 
     # td errors weighted by logits of selected actions
     lp = log_pis[torch.arange(log_pis.shape[0]), actions[:, t], t]
-    # lp = torch.tensor([log_pis[i, actions[i, t], t] for i in range(log_pis.shape[0])]).to(meta.device)
 
     rpe_term = ds[:, t].detach() * lp * actives[:, t]
     L_rpe -= torch.sum(rpe_term)

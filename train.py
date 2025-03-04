@@ -23,7 +23,7 @@ def main():
   s = 4 # arena side length
   batch_size = 40
   num_episodes = 50000 * 4
-  hidden_size = 100
+  hidden_size = 60
   plan_len = 8  # long
   # plan_len = 4  # short
   rand_ticks = True

@@ -150,3 +150,6 @@ title( sprintf(['Smaller networks continue to benefit from additional\n' ...
 ylim( [min(X(:))-1, 1] );
 
 if ( do_save ), saveas(gcf, fullfile(sp, "h3_b_val_func_error_over_learning.png")); end
+
+%%
+
