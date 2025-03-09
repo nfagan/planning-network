@@ -19,10 +19,10 @@ rew_plan_t = [ rew_plan_t8; rew_plan_t4 ];
 %%  epochs at which models reach a target average reward
 
 data_vars = {'rew', 'planfrac'};
-t = summarize( rew_plan_t, {'seed'}, data_vars, @mean );
+t = summarize_across( rew_plan_t, {'seed'}, data_vars, @mean );
 
 match_vars = setdiff( vnames(t), ['epoch', data_vars] );
-I = findeach( t, match_vars );
+I = rowgroups( t(:, match_vars) );
 
 subi = [];
 sub_targ_rews = [];
@@ -53,7 +53,7 @@ targ_rew_t.target_rew_err = abs_errs;
 
 if ( 1 )
   % reject target rewards where a model is too far from the target
-  I = findeach( targ_rew_t, 'target_rew' );
+  I = rowgroups( targ_rew_t(:, 'target_rew') );
   accept_targ = cellfun( @(x) all(targ_rew_t.target_rew_err(x) < 1), I );
   ind = cat( 1, I{accept_targ} );
   targ_rew_t = targ_rew_t(ind, :);
@@ -87,8 +87,8 @@ vn = @vnames;
 ps = softmax( policies.policy(:, 1:4), 2 );
 entropies = -sum( ps .* log(ps), 2 );
 
-[I, C] = findeach( policies, setdiff(vnames(policies) ...
-  , {'policy', 'replication', 'seed'}) );
+[I, C] = rowgroups( policies(:, setdiff(vnames(policies) ...
+  , {'policy', 'replication', 'seed'})) );
 mu_entropies = rowifun( @nanmean, I, entropies );
 
 % organize as time course over planning steps
@@ -98,7 +98,7 @@ entropy_t.entropy = cate1( cellfun(@(x) mu_entropies(x)', I, 'un', 0) );
 %%  visualize decay in entropy per additional planning step
 
 overlay_fit = false;
-do_save = true;
+do_save = false;
 match_mean_rew = false;
 
 sliced_epoch = max( entropy_t.epoch );
@@ -169,11 +169,12 @@ end
 %%  visualize change in value function error per additional planning step
 
 data_vars = { 'vf_error', 'rew' };
+
 scalar_t = rowify_vars( scalars, [{'ith_plan_step'}, data_vars] );
-scalar_t = summarize( scalar_t, {'replication', 'seed'}, data_vars, @mean );
+scalar_t = summarize_across( scalar_t, {'replication', 'seed'}, data_vars, @mean );
 
 match_mean_rew = true;
-do_save = true;
+do_save = false;
 
 if ( match_mean_rew )
   tv = intersect( vnames(scalar_t), vnames(targ_rew_t) );
@@ -216,7 +217,7 @@ epochs = unique( entropy_t.epoch );
 slope_ts = table();
 
 match_mean_rew = true;
-do_save = true;
+do_save = false;
 
 plt_var = "slopes";
 % plt_var = "entropy_deltas";
@@ -320,12 +321,13 @@ plt_each = {'units', 'planning_disabled', 'lplan'};
 plt_mask = ismember( entropy_t.ith_action_to_goal, [1] );
 
 plt_t = rowify_vars( scalars, {'ith_plan_step', 'vf_error', 'rew'} );
-plt_t = summarize( plt_t, {'replication', 'seed'}, {'vf_error', 'rew'}, @mean );
+plt_t = summarize_across( plt_t, {'replication', 'seed'}, {'vf_error', 'rew'}, @mean );
 tv = 'vf_error';
 plt_each = {'units', 'planning_disabled', 'lplan'};
 plt_mask = rowmask( plt_t );
 
-[I, C] = findeach( plt_t, plt_each, plt_mask );
+[I, C] = rowgroups( plt_t(:, plt_each), plt_mask );
+
 axs = plots.panels( numel(I) );
 
 for axi = 1:numel(I)
@@ -549,7 +551,8 @@ end
 function [t, I] = rowify_vars(T, rest)
 
 rest = string( rest );
-[I, t] = findeach( T, setdiff(vnames(T), rest) );
+% [I, t] = findeach( T, setdiff(vnames(T), rest) );
+[I, t] = rowgroups( T(:, setdiff(vnames(T), rest)) );
 
 for i = 1:numel(rest)
   t.(rest(i)) = cate1( cellfun(@(x) reshape_var(T.(rest(i)), x), I, 'un', 0) );
@@ -559,23 +562,6 @@ function dv = reshape_var(v, i)
   clns = colons( ndims(v) - 1 );
   subv = v(i, clns{:});
   dv = reshape( subv, [1, size(subv)] );
-end
-
-end
-
-function [t, I] = summarize(T, across, vs, fs)
-
-vs = string( vs );
-
-if ( isa(fs, 'function_handle') )
-  fs = repmat( {fs}, size(vs) );
-else
-  validateattributes( fs, {'cell'}, {'2d'}, mfilename, 'fs' );
-end
-
-[I, t] = findeach( T, setdiff(vnames(T), [string(across), string(vs)]) );
-for i = 1:numel(vs)
-  t.(vs(i)) = cate1( rowifun(fs{i}, I, T.(vs(i)), 'un', 0) );
 end
 
 end

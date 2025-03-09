@@ -19,17 +19,21 @@ def main():
   save = True
   prefer_gpu = False
   planning_enabled = False
+  agent_chooses_ticks_enabled = True
   use_fixed_mazes = False
   s = 4 # arena side length
   batch_size = 40
   num_episodes = 50000 * 4
-  hidden_size = 60
+  hidden_size = 100
+  recurrent_layer_type = 'gru'
   plan_len = 8  # long
   # plan_len = 4  # short
-  rand_ticks = True
+  rand_ticks = False
   num_ticks_per_step = 16
+  # num_ticks_per_step = 1
   subdir = f'plan_{b2s(planning_enabled)}-hs_{hidden_size}-' + \
-    f'plan_len_{plan_len}-rand_ticks_{b2s(rand_ticks)}-num_ticks_{num_ticks_per_step}'
+    f'plan_len_{plan_len}-rand_ticks_{b2s(rand_ticks)}-num_ticks_{num_ticks_per_step}-' + \
+    f'recurrence_{recurrent_layer_type}-agent_chooses_ticks_{b2s(agent_chooses_ticks_enabled)}'
   device = torch.device('cuda:0' if prefer_gpu and torch.cuda.is_available() else 'cpu')
 
   ep_p = eval.EpisodeParams(
@@ -41,8 +45,9 @@ def main():
   )
 
   meta = eval.make_meta(
-    arena_len=s, plan_len=plan_len, device=device, planning_enabled=planning_enabled)
-  model = eval.build_model(meta=meta, hidden_size=hidden_size)
+    arena_len=s, plan_len=plan_len, device=device, 
+    planning_enabled=planning_enabled, agent_chooses_ticks_enabled=agent_chooses_ticks_enabled)
+  model = eval.build_model(meta=meta, hidden_size=hidden_size, recurrent_layer_type=recurrent_layer_type)
   fixed_mazes = env.build_fixed_maze_arenas(s, batch_size)
 
   optim = torch.optim.Adam(lr=1e-3, params=model.parameters())
