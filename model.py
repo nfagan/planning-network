@@ -3,16 +3,24 @@ import torch.nn as nn
 from typing import Dict
 
 class RNN(nn.Module):
-  def __init__(self, *, in_size: int, hidden_size: int):
+  def __init__(self, *, in_size: int, hidden_size: int, recurrent_layer_type='gru'):
     """
-    model.jl:
-    network = Chain(GRU(mp.Nin, mp.Nhidden))
     """
-    super().__init__()
     assert in_size > 0 and hidden_size > 0
+    assert recurrent_layer_type in ['gru', 'rnn'], f'Unrecognized layer type {recurrent_layer_type}'
+
+    super().__init__()
+
     self.in_size = in_size
     self.hidden_size = hidden_size
-    self.gru = nn.GRU(in_size, hidden_size, batch_first=True)
+    self.recurrent_layer_type = recurrent_layer_type
+
+    if recurrent_layer_type == 'gru':
+      self.gru = nn.GRU(in_size, hidden_size, batch_first=True)
+    elif recurrent_layer_type == 'rnn':
+      self.gru = nn.RNN(in_size, hidden_size, batch_first=True)
+    else:
+      raise NotImplementedError
 
   def make_h0(self, batch_size: int, device: torch.device):
     return torch.zeros((batch_size, self.hidden_size), device=device)
@@ -32,7 +40,10 @@ class RNN(nn.Module):
     return y.squeeze(1), h1.squeeze(0)
   
   def ctor_params(self):
-    return {'in_size': self.in_size, 'hidden_size': self.hidden_size}
+    return {
+      'in_size': self.in_size, 'hidden_size': self.hidden_size, 
+      'recurrent_layer_type': self.recurrent_layer_type
+    }
 
 class Policy(nn.Module):
   def __init__(self, *, rnn_hidden_size: int, output_size: int):
