@@ -180,8 +180,9 @@ def evaluate():
     # 'plan-yes-full',
     # 'plan-yes-full-60',
     # 'plan_no-hs_100-plan_len_8',
+    'plan_no-hs_100-plan_len_8-rand_ticks_yes-num_ticks_16',
     'plan_no-hs_60-plan_len_8-rand_ticks_yes-num_ticks_16',
-    'plan_no-hs_100-plan_len_8-rand_ticks_yes-num_ticks_16'
+    'plan_yes-hs_100-plan_len_8-rand_ticks_no-num_ticks_1-recurrence_gru-agent_chooses_ticks_no'
   ]
 
   cp_ind_sets = [

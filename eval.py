@@ -18,6 +18,7 @@ class EpisodeResult:
   states1: torch.Tensor
   log_pi: torch.Tensor
   forced_rollouts: torch.Tensor
+  chosen_num_ticks: torch.Tensor
   v: torch.Tensor
   predicted_states: torch.Tensor
   predicted_rewards: torch.Tensor
@@ -66,28 +67,30 @@ class Meta:
   beta_v = 0.05 # value function weight
   beta_r = 1.   # reward prediction weight
 
+  agent_chooses_ticks_enabled: bool = False
+
 # ----------------------------------------------------------------------------
 
-def build_model(*, meta: Meta, hidden_size=100) -> AgentModel:
+def build_model(*, meta: Meta, hidden_size=100, recurrent_layer_type='gru') -> AgentModel:
   hs = hidden_size
   num_inputs, num_outputs, num_actions = meta.num_inputs, meta.num_outputs, meta.num_actions
   policy_output_size = num_actions + 1  # +1 for value
   # i.e., only predict state occupancy (ignore policy + value outputs)
   pred_output_size = num_outputs - num_actions - 1 
 
-  rnn = RNN(in_size=num_inputs, hidden_size=hs)
+  rnn = RNN(in_size=num_inputs, hidden_size=hs, recurrent_layer_type=recurrent_layer_type)
   policy = Policy(rnn_hidden_size=hs, output_size=policy_output_size)
   prediction = Prediction(input_size=hs + num_actions, output_size=pred_output_size)
   return AgentModel(rnn=rnn, policy=policy, prediction=prediction).to(meta.device)
 
 def make_meta(
     *, arena_len: int, plan_len: int, 
-    device: torch.device, planning_enabled=True) -> Meta:
+    device: torch.device, planning_enabled=True, agent_chooses_ticks_enabled=False) -> Meta:
   """
   walls_build.jl/useful_dimensions
   planning.jl/build_planner
   """
-  num_actions = 5 if planning_enabled else 4
+  num_actions = 5 if (planning_enabled or agent_chooses_ticks_enabled) else 4
   num_concrete_actions = 4  # movements; excludes planning action
   num_states = arena_len * arena_len
   num_walls = 2 * num_states
@@ -108,7 +111,8 @@ def make_meta(
     plan_len=plan_len,
     num_concrete_actions=num_concrete_actions, 
     num_planning_inputs=num_planning_inputs, num_planning_outputs=num_planning_outputs,
-    device=device, planning_enabled=planning_enabled)
+    device=device, planning_enabled=planning_enabled, 
+    agent_chooses_ticks_enabled=agent_chooses_ticks_enabled)
 
 def predicted_goal_states(pred_r: torch.Tensor):
   return torch.argmax(torch.softmax(pred_r, dim=1), dim=1)
@@ -160,6 +164,66 @@ def prior_loss(meta: Meta, log_pi: torch.Tensor, active: torch.Tensor):
   lprior = torch.sum(torch.exp(log_pi) * (logp - log_pi))
   return lprior
 
+def forward_agent_model_chooses_ticks(
+    *, meta: Meta, model: AgentModel, x: torch.Tensor, h_rnn: torch.Tensor, max_num_ticks: int):
+  """
+  """
+  def _policy_subset(log_pi_v): return log_pi_v[:, :meta.num_actions]
+  def _v_subset(log_pi_v): return log_pi_v[:, meta.num_actions]
+
+  # we use interpolation to mask out finished episodes while preserving gradients.
+  def lerp1(f, v0, v1): return (1. - f) * v0 + f * v1
+  def lerp1i(f: torch.Tensor, v0, v1): return (1 - f).type(torch.long) * v0 + f.type(torch.long) * v1
+  def lerp2(f, v0, v1): return (1. - f[:, None]) * v0 + f[:, None] * v1
+
+  batch_size = h_rnn.shape[0]
+  num_ticks = torch.zeros((batch_size,), dtype=torch.long)
+  one = torch.tensor(1, device=meta.device)
+  finished = torch.zeros((batch_size,), device=meta.device)
+  
+  i = 0
+  while torch.sum(finished) < batch_size and i < max_num_ticks:
+    if i == 0:
+      h_rnn, ytemp = model.rnn(x, h_rnn)
+      log_pi_v = model.policy(ytemp)
+      log_pi = _policy_subset(log_pi_v)
+      v = _v_subset(log_pi_v)
+      ps = torch.softmax(log_pi, dim=1)
+      a = sample_actions(ps)
+    else:
+      h, y = model.rnn(x, h_rnn)
+      lpv = model.policy(y)
+      lp = _policy_subset(lpv)
+      vt = _v_subset(lpv)
+      p = torch.softmax(lp, dim=1)
+      ap = sample_actions(p)
+
+      # use interpolation to mask out finished episodes. 
+      # lerp(finished, new, old) returns `old` where finished == 1, and `new` elsewhere.
+      h_rnn = lerp2(finished, h, h_rnn)
+      ytemp = lerp2(finished, y, ytemp)
+      log_pi_v = lerp2(finished, lpv, log_pi_v)
+      log_pi = lerp2(finished, lp, log_pi)
+      v = lerp1(finished, vt, v)
+      ps = lerp2(finished, p, ps)
+      a = lerp1i(finished, ap, a)
+
+    num_ticks[finished == 0.] += 1
+    i += 1
+
+    # meta.planning_action is the largest action value, so a - meta.planning_action is negative
+    #   except where a == meta.planning_action.
+    # this means that t = torch.heaviside(a - meta.planning_action, one) is equal to one wherever
+    #   a == meta.planning_action, and zero elsewhere.
+    # these episodes are *not* finished, so 1 - t are the finished ones.
+    finished = torch.maximum(
+      finished, 1. - torch.heaviside(a - meta.planning_action, one)).type(finished.dtype)
+
+  ah = F.one_hot(a, meta.num_actions)
+  pred_input = torch.hstack([ytemp, ah])
+  pred_output = model.prediction(pred_input)
+  return h_rnn, torch.log(ps), v, pred_output, a, num_ticks
+
 def forward_agent_model(
     *, meta: Meta, model: AgentModel, x: torch.Tensor, h_rnn: torch.Tensor, num_ticks: torch.Tensor):
   """
@@ -185,7 +249,7 @@ def forward_agent_model(
   ah = F.one_hot(a, meta.num_actions)
   pred_input = torch.hstack([ytemp, ah])
   pred_output = model.prediction(pred_input)
-  return h_rnn, torch.log(ps), v, pred_output, a
+  return h_rnn, torch.log(ps), v, pred_output, a, num_ticks
 
 def gen_plan_input(*, meta: Meta, path_hot: torch.Tensor, found_reward: torch.Tensor):
   x = torch.zeros((path_hot.shape[0], meta.num_planning_inputs))
@@ -221,17 +285,19 @@ def rollout(
   """
   batch_size = len(arenas)
 
-  path = torch.zeros((batch_size, meta.plan_len), dtype=torch.long, device=meta.device)
+  paths_hot = torch.zeros((batch_size, meta.num_concrete_actions, meta.plan_len), device=meta.device)
   found_rew = torch.zeros((batch_size,), device=meta.device)
 
   # remaining indices of rollouts that haven't yet reached the goal state.
-  rmi = torch.arange(0, batch_size, device=meta.device)
+  rmi = torch.ones((batch_size,), dtype=torch.bool, device=meta.device)
 
   ytemp = h_rnn
   dst_h_rnn = h_rnn.clone()
 
   for pi in range(meta.plan_len):
-    if rmi.numel() == 0: break
+    if rmi.sum() == 0: break
+    # numeric remaining indices (instead of boolean)
+    nmri = torch.argwhere(rmi).squeeze(1)
 
     # for the first planning iteration, the policy derives from the rnn's current hidden state;
     # afterwards, the policy derives from the rnn's output.
@@ -250,8 +316,9 @@ def rollout(
     ah = F.one_hot(a, meta.num_actions)
 
     # record chosen actions
-    for b in rmi:
-      path[b, pi] = a[b]
+    assert a.shape[0] == batch_size
+    for i in range(nmri.shape[0]):
+      paths_hot[nmri[i], a[nmri[i]], pi] = 1.
 
     # record hidden state of non-goal-reached rollouts
     dst_h_rnn[rmi, :] = h_rnn[rmi, :]
@@ -261,13 +328,14 @@ def rollout(
     s = torch.argmax(torch.softmax(pred_output[:, :meta.num_states], dim=1), dim=1)
 
     # check whether we reached the goal, and only consider remaining (non-goal-reached) rollouts
-    gr = torch.argwhere(s == goal_s).squeeze(1)
-    rmi = torch.tensor([x for x in rmi if x not in gr], device=meta.device)
-    found_rew[gr] = 1
+    goal_reached = s == goal_s
+    # mark that we found reward, but only consider remaining active episodes (rmi)
+    found_rew[rmi & goal_reached] = 1
+    rmi[goal_reached] = False
 
     time = time + 1.
 
-  return path, found_rew, dst_h_rnn
+  return paths_hot, found_rew, dst_h_rnn
 
 def plan(
     *, meta: Meta, model: AgentModel, mazes: List[env.Arena], pi: torch.Tensor,
@@ -286,8 +354,7 @@ def plan(
       meta=meta, model=model, arenas=[mazes[i] for i in pi], s=s[pi], a=a[pi], 
       goal_s=predicted_goal_states(pred_reward)[pi],
       h_rnn=h_rnn[pi, :], rewards=prev_rewards[pi, :], time=time[pi, :])
-    paths_hot[pi, :] = F.one_hot(
-      path, meta.num_concrete_actions).flatten(1).type(paths_hot.dtype).to(meta.device)
+    paths_hot[pi, :] = path.flatten(1)
     plan_found_reward[pi] = found_rew
     dst_h_rnn[pi, :] = h
   return paths_hot, plan_found_reward, dst_h_rnn
@@ -359,6 +426,10 @@ def run_episode(
     meta.T, meta.concrete_action_time, batch_size).to(meta.device)
   performed_rand_ticks = torch.zeros((batch_size,), dtype=torch.bool, device=meta.device)
 
+  # phases
+  explore_phase_len = torch.ones((batch_size,), dtype=torch.long, device=meta.device) * -1
+  is_exploit = torch.zeros((batch_size,), dtype=torch.bool, device=meta.device)
+
   actions = []
   s0s = []  # states at step t
   s1s = []  # states at step t+1
@@ -369,6 +440,7 @@ def run_episode(
   pred_rewards = []
   actives = []
   forced_rollouts = []
+  chosen_ticks = []
 
   t = 0
   n_plan = d_plan = 0.0
@@ -398,14 +470,25 @@ def run_episode(
       performed_rand_ticks[candidates_for_ticks] = True
 
     elif params.num_ticks_per_step_applies == EpisodeParams.NUM_TICKS_EXPLORE_ONLY:
-      if t == 0:
-        num_ticks_per_step = num_ticks_per_step * params.num_ticks_per_step
+      # only use `params.num_ticks_per_step` ticks during the explore phase.
+      num_ticks_per_step[torch.logical_not(is_exploit)] *= params.num_ticks_per_step
 
     elif params.num_ticks_per_step_applies == EpisodeParams.NUM_TICKS_EXPLOIT_ONLY:
       if t > 0:
-        # only use `params.num_ticks_per_step` ticks at the start of the exploit phase.
-        # is_exploit is computed later (for the t+1 th time step), so only valid when t > 0
-        num_ticks_per_step[is_exploit] = params.num_ticks_per_step
+        # first_exploit is computed later (for the t+1 th time step), so only valid when t > 0
+        if False:
+          # only use `params.num_ticks_per_step` ticks at the start of the exploit phase.
+          num_ticks_per_step[first_exploit] = params.num_ticks_per_step
+        elif False:
+          # use `params.num_ticks_per_step` ticks throughout the exploit phase.
+          num_ticks_per_step[is_exploit] = params.num_ticks_per_step
+        elif True:
+          # use `params.num_ticks_per_step` ticks throughout the exploit phase, but only for the 
+          # same number of steps as the explore phase.
+          explore_lens = explore_phase_len[is_exploit]; assert torch.all(explore_lens >= 0)
+          t_off = t - explore_lens; assert torch.all(t_off >= 0)
+          permit_ticks = torch.argwhere(is_exploit).squeeze(1)[t_off < explore_lens]
+          num_ticks_per_step[permit_ticks] *= params.num_ticks_per_step
         
     else:
       # no condition on when `num_ticks_per_step` applies
@@ -420,24 +503,32 @@ def run_episode(
     """
 
     # perform a step of recurrent processing
-    h_rnn, log_pi, v, pred_output, a1 = forward_agent_model(
-      meta=meta, model=model, x=x, h_rnn=h_rnn, num_ticks=num_ticks_per_step)
+    if meta.agent_chooses_ticks_enabled:
+      h_rnn, log_pi, v, pred_output, a1, chosen_num_ticks = forward_agent_model_chooses_ticks(
+        meta=meta, model=model, x=x, h_rnn=h_rnn, max_num_ticks=params.num_ticks_per_step)
+    else:
+      h_rnn, log_pi, v, pred_output, a1, chosen_num_ticks = forward_agent_model(
+        meta=meta, model=model, x=x, h_rnn=h_rnn, num_ticks=num_ticks_per_step)
     pred_state, pred_reward = decompose_prediction_output(meta, pred_output)
 
     # update the agent's state, when the chosen action is concrete
     s1, rew = act_concretely(meta, mazes, s, a1, rew_loc)
+    got_reward = (rew > 0.).squeeze(1)
+
+    # episodes that just entered the exploit phase
+    first_exploit = torch.logical_not(is_exploit) & got_reward
 
     # episodes that are are in the exploit phase
-    if len(rews) > 0:
-      is_exploit = torch.any(torch.hstack(rews) > 0., dim=1).to(meta.device)
-    else:
-      is_exploit = torch.zeros((batch_size,), dtype=torch.bool, device=meta.device)
+    is_exploit[got_reward] = True
 
-    got_reward = (rew > 0.).squeeze(1)
-    # episodes that just entered the exploit phase
-    first_exploit = torch.logical_and(torch.logical_not(is_exploit), got_reward)
+    # for examples that are starting the exploit phase, mark the length of the explore phase.
+    # t + 1 because we update time later.
+    explore_phase_len[first_exploit] = t + 1
+
+    """
+    (begin) planning
+    """
     forced_rollout = torch.zeros_like(first_exploit)
-
     if meta.planning_enabled:
       # implement rollouts
       if params.force_rollouts_at_start_of_exploit_phase:
@@ -459,6 +550,9 @@ def run_episode(
       
       n_plan += pi.numel()
       d_plan += torch.sum(is_active).item()
+    """
+    (end) planning
+    """
 
     # increment time
     dt = torch.ones_like(time) * meta.concrete_action_time
@@ -475,6 +569,7 @@ def run_episode(
     pred_rewards.append(pred_reward)
     actives.append(is_active)
     forced_rollouts.append(forced_rollout)
+    chosen_ticks.append(chosen_num_ticks)
     
     # prepare next iteration
     a = a1
@@ -495,6 +590,7 @@ def run_episode(
   true_rew_locs = rew_loc.tile(pred_rewards.shape[2], 1).T
   actives = torch.stack(actives).permute(1, 0, 2).squeeze(2).type(pred_rewards.dtype)
   forced_rollouts = torch.stack(forced_rollouts).T
+  chosen_ticks = torch.vstack(chosen_ticks).T
 
   # update losses
   # ------------
@@ -561,9 +657,10 @@ def run_episode(
   p_plan = 0. if d_plan == 0 else n_plan/d_plan
 
   if params.verbose > 0:
+    nt = torch.mean(torch.sum(chosen_ticks.type(actives.dtype) * actives, dim=1) / torch.sum(actives, dim=1))
     print(
       f'loss: {L.item():.3f} | p(plan): {p_plan:.3f} | ' + 
-      f'rew: {tot_rew.item():.3f} | t: {wall_clock_t:.3f}')
+      f'rew: {tot_rew.item():.3f} | t: {wall_clock_t:.3f} | ticks: {nt.item():.2f}')
 
   return EpisodeResult(
     loss=L, rewards=rews, actions=actions, actives=actives,
@@ -574,4 +671,4 @@ def run_episode(
     reward_prediction_acc=reward_pred_acc.item(),
     predicted_states=to_pred_state(pred_states), 
     predicted_rewards=to_pred_state(pred_rewards),
-    reward_locs=rew_loc, states0=s0s, states1=s1s)
+    reward_locs=rew_loc, states0=s0s, states1=s1s, chosen_num_ticks=chosen_ticks)
