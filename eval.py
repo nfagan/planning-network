@@ -68,6 +68,7 @@ class Meta:
   beta_r = 1.   # reward prediction weight
 
   agent_chooses_ticks_enabled: bool = False
+  ticks_take_time: bool = False
 
 # ----------------------------------------------------------------------------
 
@@ -85,7 +86,8 @@ def build_model(*, meta: Meta, hidden_size=100, recurrent_layer_type='gru') -> A
 
 def make_meta(
     *, arena_len: int, plan_len: int, 
-    device: torch.device, planning_enabled=True, agent_chooses_ticks_enabled=False) -> Meta:
+    device: torch.device, planning_enabled=True, 
+    agent_chooses_ticks_enabled=False, ticks_take_time=False) -> Meta:
   """
   walls_build.jl/useful_dimensions
   planning.jl/build_planner
@@ -112,7 +114,8 @@ def make_meta(
     num_concrete_actions=num_concrete_actions, 
     num_planning_inputs=num_planning_inputs, num_planning_outputs=num_planning_outputs,
     device=device, planning_enabled=planning_enabled, 
-    agent_chooses_ticks_enabled=agent_chooses_ticks_enabled)
+    agent_chooses_ticks_enabled=agent_chooses_ticks_enabled,
+    ticks_take_time=ticks_take_time)
 
 def predicted_goal_states(pred_r: torch.Tensor):
   return torch.argmax(torch.softmax(pred_r, dim=1), dim=1)
@@ -557,6 +560,8 @@ def run_episode(
     # increment time
     dt = torch.ones_like(time) * meta.concrete_action_time
     if meta.planning_enabled: dt[pi, :] = meta.planning_action_time
+    if meta.ticks_take_time: 
+      dt += ((chosen_num_ticks - 1.) * meta.planning_action_time).view(dt.shape)
 
     # push results
     rews.append(rew)
