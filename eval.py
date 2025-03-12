@@ -1,4 +1,5 @@
 from model import AgentModel, RNN, Policy, Prediction
+from utility import DBG
 import env
 import torch
 import torch.nn.functional as F
@@ -198,6 +199,10 @@ def forward_agent_model_chooses_ticks(
       lpv = model.policy(y)
       lp = _policy_subset(lpv)
       vt = _v_subset(lpv)
+      # @TODO (idea): a learnable mapping from x -> a scalar beta that specifies how much policy 
+      # logits `lp` should be reduced for the thinking action, so that:
+      # beta = model.thinking_weight([x, i])  # concatentation of input and amount of processing
+      # lp[thinking_action] = lp[thinking_action] - beta * i * [const]
       p = torch.softmax(lp, dim=1)
       ap = sample_actions(p)
 
@@ -221,6 +226,13 @@ def forward_agent_model_chooses_ticks(
     # these episodes are *not* finished, so 1 - t are the finished ones.
     finished = torch.maximum(
       finished, 1. - torch.heaviside(a - meta.planning_action, one)).type(finished.dtype)
+    
+  # for episodes that don't finish, choose a random action.
+  incomplete = finished == 0.
+  num_incomplete = torch.sum(incomplete).type(torch.long)
+  if num_incomplete > 0:
+    ra = torch.randint(0, meta.num_concrete_actions, (num_incomplete,)).to(meta.device)
+    a[incomplete] = ra
 
   ah = F.one_hot(a, meta.num_actions)
   pred_input = torch.hstack([ytemp, ah])
@@ -461,6 +473,9 @@ def run_episode(
       prev_rewards=prev_rewards, shot=F.one_hot(s, meta.num_states), 
       time=time, plan_input=plan_input)
     
+    # mask out finished episodes
+    x[~is_active.squeeze(1), :] = 0.
+    
     """
     (begin) determine the number of ticks of recurrent processing to perform
     """
@@ -506,7 +521,8 @@ def run_episode(
     """
 
     # perform a step of recurrent processing
-    if meta.agent_chooses_ticks_enabled:
+    # if meta.agent_chooses_ticks_enabled:
+    if False:
       h_rnn, log_pi, v, pred_output, a1, chosen_num_ticks = forward_agent_model_chooses_ticks(
         meta=meta, model=model, x=x, h_rnn=h_rnn, max_num_ticks=params.num_ticks_per_step)
     else:
@@ -514,8 +530,13 @@ def run_episode(
         meta=meta, model=model, x=x, h_rnn=h_rnn, num_ticks=num_ticks_per_step)
     pred_state, pred_reward = decompose_prediction_output(meta, pred_output)
 
-    # update the agent's state, when the chosen action is concrete
+    # update the agent's state, when the chosen action is concrete.
     s1, rew = act_concretely(meta, mazes, s, a1, rew_loc)
+
+    # mask out finished episodes.
+    rew *= is_active
+
+    # check whether the agent newly received reward on this step.
     got_reward = (rew > 0.).squeeze(1)
 
     # episodes that just entered the exploit phase
@@ -532,6 +553,8 @@ def run_episode(
     (begin) planning
     """
     forced_rollout = torch.zeros_like(first_exploit)
+    pi = torch.tensor([], dtype=torch.long, device=meta.device)
+  
     if meta.planning_enabled:
       # implement rollouts
       if params.force_rollouts_at_start_of_exploit_phase:
@@ -550,16 +573,28 @@ def run_episode(
         paths_hot, plan_found_reward, plan_h_rnn = plan(
           meta=meta, model=model, mazes=mazes, pi=pi, h_rnn=plan_h_rnn, s=s, a=a, 
           time=time, pred_reward=pred_reward, prev_rewards=prev_rewards)
-      
-      n_plan += pi.numel()
-      d_plan += torch.sum(is_active).item()
     """
     (end) planning
     """
 
+    """
+    (begin) agent chooses ticks
+    """
+    if meta.agent_chooses_ticks_enabled:
+      # think when the chosen action is to think
+      think_mask = a1 == meta.planning_action
+      pi = torch.argwhere(think_mask & is_active.squeeze(1)).squeeze(1)
+    """
+    (end) agent chooses ticks
+    """
+
+    n_plan += pi.numel()
+    d_plan += torch.sum(is_active).item()
+
     # increment time
     dt = torch.ones_like(time) * meta.concrete_action_time
-    if meta.planning_enabled: dt[pi, :] = meta.planning_action_time
+    if meta.planning_enabled or meta.agent_chooses_ticks_enabled:
+      dt[pi, :] = meta.planning_action_time
     if meta.ticks_take_time: 
       dt += ((chosen_num_ticks - 1.) * meta.planning_action_time).view(dt.shape)
 
@@ -577,6 +612,7 @@ def run_episode(
     chosen_ticks.append(chosen_num_ticks)
     
     # prepare next iteration
+    # if meta.agent_chooses_ticks_enabled: rew[pi] = prev_rewards[pi] # carry forward previous rewards
     a = a1
     s = s1
     prev_rewards = rew

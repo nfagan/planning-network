@@ -2,6 +2,9 @@ from model import AgentModel
 from typing import Dict, List
 import numpy as np
 
+# hacky debug command. insert `exec(DBG)` into some scope to step into a REPL console at that point.
+DBG = 'import code; __ctx001__ = globals().copy(); __ctx001__.update(locals()); code.interact(local=__ctx001__);'
+
 def instantiate_model_from_checkpoint(sd: Dict[str, any]) -> AgentModel:
   mdl = AgentModel.from_ctor_params(sd['params'])
   mdl.load_state_dict(sd['state'])
