@@ -5,7 +5,7 @@ import env
 import torch
 import numpy as np
 from typing import List, Tuple
-import os
+import os, glob, re
 from dataclasses import dataclass
 from multiprocessing import Process
 
@@ -14,7 +14,7 @@ class Context:
   dst_dir = os.path.join(os.getcwd(), 'results')
   cp_root_dir = os.path.join(os.getcwd(), 'checkpoints')
   save = True
-  num_processes = 8
+  num_processes = 2
   # num_processes = 0
   batch_size: int
   arena_len: int
@@ -164,6 +164,11 @@ def evaluate_n(ctx: Context, subdir: str, cp_inds: List[int], tot_experience: Li
     if ctx.save:
       torch.save({'row': row}, os.path.join(ctx.dst_dir, f'evaluation-{subdir}-{cp_f}'))
 
+def checkpoint_indices_in_directory(root_p: str, cp_subdir: str) -> np.ndarray:
+  pths = [os.path.split(x)[1] for x in glob.glob(os.path.join(root_p, cp_subdir, '*.pth'))]
+  cp_inds = [int(re.search(r'(\d+)', s).group(1)) for s in pths]
+  return np.array(sorted(cp_inds))
+
 def evaluate():
   arena_len = 4
   batch_size = int(1e3)
@@ -176,18 +181,10 @@ def evaluate():
   )
 
   cp_subdirs = [
-    # 'plan-yes-full-short-rollouts',
-    # 'plan-yes-full',
-    # 'plan-yes-full-60',
-    # 'plan_no-hs_100-plan_len_8',
-    'plan_no-hs_100-plan_len_8-rand_ticks_yes-num_ticks_16',
-    'plan_no-hs_60-plan_len_8-rand_ticks_yes-num_ticks_16',
-    'plan_yes-hs_100-plan_len_8-rand_ticks_no-num_ticks_1-recurrence_gru-agent_chooses_ticks_no'
+    'plan_no-hs_100-plan_len_8-rand_ticks_yes-num_ticks_16-recurrence_gru-agent_chooses_ticks_no-ticks_take_time_yes'
   ]
 
-  cp_ind_sets = [
-    np.array([*np.arange(0, int(195e3)+1, int(5e3)), int(200e3 - 1)])
-  ] * len(cp_subdirs)
+  cp_ind_sets = [checkpoint_indices_in_directory(ctx.cp_root_dir, subdir) for subdir in cp_subdirs]
 
   for si, subdir in enumerate(cp_subdirs):
     print(f'{subdir} ({si+1} of {len(cp_subdirs)})')
