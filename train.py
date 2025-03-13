@@ -38,8 +38,8 @@ def main():
   # plan_len = 4  # short
   rand_ticks = False
   num_ticks_per_step = 1
+  num_rollouts_per_planning_action = 1
   planning_action_time = 0.12
-  # num_ticks_per_step = 1
   lr = 1e-3
   """
   (end) hps
@@ -56,7 +56,7 @@ def main():
 
   ep_p = eval.EpisodeParams(
     force_rollouts_at_start_of_exploit_phase=force_rollouts_at_start_of_exploit_phase,
-    num_rollouts_per_planning_action=1,
+    num_rollouts_per_planning_action=num_rollouts_per_planning_action,
     num_ticks_per_step_is_randomized=rand_ticks,
     num_ticks_per_step=num_ticks_per_step,
     verbose=2
@@ -88,8 +88,8 @@ def main():
     optim.step()
 
     if log and e % int(25) == 0:
-      writer.add_scalar('reward', res.mean_total_reward, e)
-      writer.add_scalar('p(plan)', res.p_plan, e)
+      writer.add_scalar('reward', res.mean_total_reward, e * batch_size)
+      writer.add_scalar('p(plan)', res.p_plan, e * batch_size)
 
     if save and ((e == num_episodes - 1) or e % int(5e3) == 0):
       save_p = os.path.join(root_dir, 'checkpoints', subdir)
