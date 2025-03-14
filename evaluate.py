@@ -14,7 +14,7 @@ class Context:
   dst_dir = os.path.join(os.getcwd(), 'results')
   cp_root_dir = os.path.join(os.getcwd(), 'checkpoints')
   save = True
-  num_processes = 2
+  num_processes = 4
   # num_processes = 0
   batch_size: int
   arena_len: int
@@ -177,11 +177,11 @@ def evaluate():
     batch_size=batch_size,
     arena_len=arena_len,
     mazes=env.build_maze_arenas(arena_len, batch_size),
-    ep_p=eval.EpisodeParams(verbose=0),
+    ep_p=eval.EpisodeParams(sample_actions_greedily=False),
   )
 
   cp_subdirs = [
-    'plan_no-hs_100-plan_len_8-rand_ticks_yes-num_ticks_16-recurrence_gru-agent_chooses_ticks_no-ticks_take_time_yes'
+    'plan_yes-hs_100-plan_len_8-rand_ticks_no-num_ticks_1-recurrence_gru-agent_chooses_ticks_no-ticks_take_time_no'
   ]
 
   cp_ind_sets = [checkpoint_indices_in_directory(ctx.cp_root_dir, subdir) for subdir in cp_subdirs]

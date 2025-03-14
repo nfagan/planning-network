@@ -41,6 +41,7 @@ class EpisodeParams:
   num_ticks_per_step_applies: int = 0
   num_ticks_per_step_is_randomized: bool = False
   force_rollouts_at_start_of_exploit_phase: bool = False
+  sample_actions_greedily: bool = False
   verbose: int = 0
 
 @dataclass
@@ -155,9 +156,12 @@ def td_error(rews: torch.Tensor, v: torch.Tensor):
     ds[:, N - t - 1] = r - v[:, N - t - 1]
   return ds
 
-def sample_actions(ps: torch.Tensor): 
-  r = torch.multinomial(ps, 1, True)
-  return r.squeeze(1)
+def sample_actions(ps: torch.Tensor, greedy_actions: bool): 
+  if greedy_actions:
+    return torch.argmax(ps, dim=1)
+  else:
+    res = torch.multinomial(ps, 1, True)
+    return res.squeeze(1)
 
 def prior_loss(meta: Meta, log_pi: torch.Tensor, active: torch.Tensor):
   """
@@ -171,7 +175,8 @@ def prior_loss(meta: Meta, log_pi: torch.Tensor, active: torch.Tensor):
   return lprior
 
 def forward_agent_model(
-    *, meta: Meta, model: AgentModel, x: torch.Tensor, h_rnn: torch.Tensor, num_ticks: torch.Tensor):
+    *, meta: Meta, model: AgentModel, x: torch.Tensor, h_rnn: torch.Tensor, 
+    num_ticks: torch.Tensor, greedy_actions: bool):
   """
   a2c.jl/forward_modular
   """
@@ -191,7 +196,7 @@ def forward_agent_model(
   log_pi = _policy_subset(log_pi_v)
   v = _v_subset(log_pi_v)
   ps = torch.softmax(log_pi, dim=1)
-  a = sample_actions(ps)
+  a = sample_actions(ps, greedy_actions)
   ah = F.one_hot(a, meta.num_actions)
   pred_input = torch.hstack([ytemp, ah])
   pred_output = model.prediction(pred_input)
@@ -258,7 +263,9 @@ def rollout(
     log_pi = log_pi_v[:, :meta.num_concrete_actions]
     # sample next actions
     ps = torch.softmax(log_pi, dim=1)
-    a = sample_actions(ps)
+    # @NOTE: prefer sampling ("imagined") actions during rollouts even when actions are selected 
+    # greedily in the "real" environment. see model_planner.jl/model_tree_search
+    a = sample_actions(ps, greedy_actions=False)
     ah = F.one_hot(a, meta.num_actions)
 
     # record chosen actions
@@ -297,9 +304,14 @@ def plan(
   # indices of planning actions
   with torch.no_grad():
     path, found_rew, h = rollout(
-      meta=meta, model=model, arenas=[mazes[i] for i in pi], s=s[pi], a=a[pi], 
+      meta=meta, model=model, 
+      arenas=[mazes[i] for i in pi], 
+      s=s[pi], a=a[pi], 
       goal_s=predicted_goal_states(pred_reward)[pi],
-      h_rnn=h_rnn[pi, :], rewards=prev_rewards[pi, :], time=time[pi, :])
+      h_rnn=h_rnn[pi, :], 
+      rewards=prev_rewards[pi, :], 
+      time=time[pi, :]
+    )
     paths_hot[pi, :] = path.flatten(1)
     plan_found_reward[pi] = found_rew
     dst_h_rnn[pi, :] = h
@@ -463,7 +475,8 @@ def run_episode(
     """
     # perform a step of recurrent processing
     h_rnn, log_pi, v, pred_output, a1, chosen_num_ticks = forward_agent_model(
-      meta=meta, model=model, x=x, h_rnn=h_rnn, num_ticks=num_ticks_per_step)
+      meta=meta, model=model, x=x, h_rnn=h_rnn, 
+      num_ticks=num_ticks_per_step, greedy_actions=params.sample_actions_greedily)
     pred_state, pred_reward = decompose_prediction_output(meta, pred_output)
 
     # update the agent's state, when the chosen action is concrete.

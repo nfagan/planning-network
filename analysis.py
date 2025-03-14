@@ -78,7 +78,7 @@ def main():
   root_p = os.getcwd()
 
   cp_subdir_names = [
-    'plan_no-hs_100-plan_len_8-rand_ticks_yes-num_ticks_16-recurrence_gru-agent_chooses_ticks_no-ticks_take_time_yes'
+    'plan_yes-hs_100-plan_len_8-rand_ticks_no-num_ticks_1-recurrence_gru-agent_chooses_ticks_no-ticks_take_time_no'
   ]
 
   for si, cp_subdir_name in enumerate(cp_subdir_names):
