@@ -3,8 +3,7 @@ import env
 from model import AgentModel
 import torch
 from torch.utils.tensorboard import SummaryWriter
-import os
-import time
+import os, time, datetime
 
 def save_checkpoint(model: AgentModel, mazes, meta, ep_p: eval.EpisodeParams, save_p, fname):
   if not os.path.exists(save_p): os.makedirs(save_p, exist_ok=True)
@@ -22,6 +21,7 @@ def main():
   """
   root_dir = os.getcwd()
   save = True
+  checkpoint_interval = int(1e3)
   log = True
   prefer_gpu = False
   planning_enabled = True
@@ -45,14 +45,16 @@ def main():
   (end) hps
   """
 
+  now_s = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+
   subdir = f'plan_{b2s(planning_enabled)}-hs_{hidden_size}-' + \
     f'plan_len_{plan_len}-rand_ticks_{b2s(rand_ticks)}-num_ticks_{num_ticks_per_step}-' + \
     f'recurrence_{recurrent_layer_type}-agent_chooses_ticks_{b2s(agent_chooses_ticks_enabled)}-' + \
-    f'ticks_take_time_{b2s(ticks_take_time)}'
+    f'ticks_take_time_{b2s(ticks_take_time)}-{now_s}'
   
   device = torch.device('cuda:0' if prefer_gpu and torch.cuda.is_available() else 'cpu')
 
-  if log: writer = SummaryWriter(os.path.join(root_dir, 'logs'))
+  if log: writer = SummaryWriter(os.path.join(root_dir, 'logs', now_s))
 
   ep_p = eval.EpisodeParams(
     force_rollouts_at_start_of_exploit_phase=force_rollouts_at_start_of_exploit_phase,
@@ -91,7 +93,7 @@ def main():
       writer.add_scalar('reward', res.mean_total_reward, e * batch_size)
       writer.add_scalar('p(plan)', res.p_plan, e * batch_size)
 
-    if save and ((e == num_episodes - 1) or e % int(5e3) == 0):
+    if save and ((e == num_episodes - 1) or e % checkpoint_interval == 0):
       save_p = os.path.join(root_dir, 'checkpoints', subdir)
       save_checkpoint(model, mazes, meta, ep_p, save_p, f'cp-{e}.pth')
 

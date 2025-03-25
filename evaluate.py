@@ -181,7 +181,7 @@ def evaluate():
   )
 
   cp_subdirs = [
-    'plan_yes-hs_100-plan_len_8-rand_ticks_no-num_ticks_1-recurrence_gru-agent_chooses_ticks_no-ticks_take_time_no'
+    'plan_yes-hs_100-plan_len_8-rand_ticks_no-num_ticks_1-recurrence_gru-agent_chooses_ticks_no-ticks_take_time_no-20250320-102101'
   ]
 
   cp_ind_sets = [checkpoint_indices_in_directory(ctx.cp_root_dir, subdir) for subdir in cp_subdirs]

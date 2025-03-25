@@ -63,7 +63,8 @@ class Meta:
   planning_action_time = 0.12
   # ----
   #  jl: βp: 0.5 | βe: 0.05 | βv: 0.05 | βr: 1.0
-  beta_p = 0.5  # predictive weight
+  # beta_p = 0.5  # predictive weight
+  beta_p = 0.0  # predictive weight
   beta_e = 0.05 # prior weight
   # beta_e = 0.00 # prior weight
   beta_v = 0.05 # value function weight
@@ -220,7 +221,8 @@ def gen_input(
   x = torch.zeros((len(arenas), meta.num_inputs), device=meta.device)
   x[:, :meta.num_actions] = prev_ahot
   x[:, meta.num_actions:meta.num_actions+1] = prev_rewards
-  x[:, meta.num_actions+1:meta.num_actions+2] = time / meta.T
+  # x[:, meta.num_actions+1:meta.num_actions+2] = time / meta.T
+  x[:, meta.num_actions+1:meta.num_actions+2] = time / 50.0; assert meta.T < 50.0 # walls.jl/gen_input
   x[:, meta.num_actions+2:meta.num_actions+2+meta.num_states] = shot
   x[:, meta.num_actions+2+meta.num_states:meta.num_actions+2+meta.num_states+meta.num_states*2] = walls
   if plan_input is not None:
