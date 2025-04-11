@@ -21,8 +21,8 @@ def main():
   """
   root_dir = os.getcwd()
   save = True
-  checkpoint_interval = int(1e3)
   log = True
+  checkpoint_interval = int(1e3)
   prefer_gpu = False
   planning_enabled = True
   agent_chooses_ticks_enabled = False
@@ -34,12 +34,14 @@ def main():
   num_episodes = 50000 * 4
   hidden_size = 100
   recurrent_layer_type = 'gru'
+  use_zero_bias_hh = True
+  use_trainable_h0 = True
   plan_len = 8  # long
   # plan_len = 4  # short
   rand_ticks = False
+  include_dummy_prediction_output = True
   num_ticks_per_step = 1
   num_rollouts_per_planning_action = 1
-  planning_action_time = 0.12
   lr = 1e-3
   """
   (end) hps
@@ -68,14 +70,19 @@ def main():
     arena_len=s, plan_len=plan_len, device=device, 
     planning_enabled=planning_enabled, 
     agent_chooses_ticks_enabled=agent_chooses_ticks_enabled, 
-    ticks_take_time=ticks_take_time, planning_action_time=planning_action_time)
+    ticks_take_time=ticks_take_time, include_dummy_prediction_output=include_dummy_prediction_output)
   
   model = eval.build_model(
-    meta=meta, hidden_size=hidden_size, recurrent_layer_type=recurrent_layer_type)
+    meta=meta, hidden_size=hidden_size,
+    recurrent_layer_type=recurrent_layer_type, 
+    use_zero_bias_hh=use_zero_bias_hh, use_trainable_h0=use_trainable_h0)
 
   fixed_mazes = env.build_fixed_maze_arenas(s, batch_size)
 
-  optim = torch.optim.Adam(lr=lr, params=model.parameters())
+  trainable_params = [*filter(lambda p: p.requires_grad, model.parameters())]
+  print('Num trainable arrays: ', len(trainable_params))
+  print('Num trainable params: ', sum([p.numel() for p in trainable_params]))
+  optim = torch.optim.Adam(lr=lr, params=trainable_params)
 
   t0 = time.time()
   for e in range(num_episodes):

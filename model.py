@@ -1,9 +1,11 @@
 import torch
 import torch.nn as nn
-from typing import Dict
+from typing import Dict, Optional
 
 class RNN(nn.Module):
-  def __init__(self, *, in_size: int, hidden_size: int, recurrent_layer_type='gru'):
+  def __init__(
+    self, *, in_size: int, hidden_size: int, recurrent_layer_type='gru', 
+    state0: Optional[torch.Tensor]=None, use_zero_bias_hh: bool=True, use_trainable_h0: bool=False):
     """
     """
     assert in_size > 0 and hidden_size > 0
@@ -11,9 +13,16 @@ class RNN(nn.Module):
 
     super().__init__()
 
+    if use_trainable_h0:
+      assert state0 is None, "Don't provide an initial hidden state when enabling a trainable one."
+      state0 = nn.Parameter(torch.zeros((hidden_size,)))
+
     self.in_size = in_size
     self.hidden_size = hidden_size
     self.recurrent_layer_type = recurrent_layer_type
+    self.state0 = state0
+    self.use_zero_bias_hh = use_zero_bias_hh
+    self.use_trainable_h0 = use_trainable_h0
 
     if recurrent_layer_type == 'gru':
       self.gru = nn.GRU(in_size, hidden_size, batch_first=True)
@@ -21,9 +30,16 @@ class RNN(nn.Module):
       self.gru = nn.RNN(in_size, hidden_size, batch_first=True)
     else:
       raise NotImplementedError
+    
+    if self.use_zero_bias_hh:
+      self.gru.bias_hh_l0.data.fill_(0.)
+      self.gru.bias_hh_l0.requires_grad = False
 
   def make_h0(self, batch_size: int, device: torch.device):
-    return torch.zeros((batch_size, self.hidden_size), device=device)
+    h = torch.zeros((batch_size, self.hidden_size), device=device)
+    if self.state0 is not None:
+      h = h + self.state0
+    return h
 
   def forward(self, x: torch.Tensor, h: torch.Tensor):
     """
@@ -42,7 +58,9 @@ class RNN(nn.Module):
   def ctor_params(self):
     return {
       'in_size': self.in_size, 'hidden_size': self.hidden_size, 
-      'recurrent_layer_type': self.recurrent_layer_type
+      'recurrent_layer_type': self.recurrent_layer_type,
+      'use_zero_bias_hh': self.use_zero_bias_hh,
+      'use_trainable_h0': self.use_trainable_h0
     }
 
 class Policy(nn.Module):

@@ -56,6 +56,9 @@ def to_data_frame(res):
   rv = 'res'
   # rv = 'train_res'
 
+  def guard_none_mean(key):
+    return [np.nanmean(res[i][key], axis=0) if res[i][key] is not None else np.zeros((1,)) for i in ri]
+
   df = pd.DataFrame({
     'p_plans': np.array([res[i][rv].p_plan for i in ri]),
     'earned_rew': np.array([res[i][rv].mean_total_reward for i in ri]),
@@ -65,11 +68,11 @@ def to_data_frame(res):
     'subdir': [res[i]['subdirectory'] for i in ri],
     'num_rollouts': [res[i]['num_forced_rollouts'] for i in ri],
     'policy_entropies': [np.nanmean(res[i]['forced_rollout_policy_entropies'], axis=0) for i in ri],
-    'num_ticks': [res[i]['num_ticks'] for i in ri],
-    'exploit_only_forced_ticks_mean_reward': [np.nanmean(res[i]['exploit_only_forced_ticks_mean_reward'], axis=0) for i in ri],
-    'explore_only_forced_ticks_mean_reward': [np.nanmean(res[i]['explore_only_forced_ticks_mean_reward'], axis=0) for i in ri],
-    'always_forced_ticks_mean_reward': [np.nanmean(res[i]['always_forced_ticks_mean_reward'], axis=0) for i in ri],
-    'once_randomly_forced_ticks_mean_reward': [np.nanmean(res[i]['once_randomly_forced_ticks_mean_reward'], axis=0) for i in ri],
+    'num_ticks': [res[i]['num_ticks'] if res[i]['num_ticks'] is not None else np.zeros((1,)) for i in ri],
+    'exploit_only_forced_ticks_mean_reward': guard_none_mean('exploit_only_forced_ticks_mean_reward'),
+    'explore_only_forced_ticks_mean_reward': guard_none_mean('explore_only_forced_ticks_mean_reward'),
+    'always_forced_ticks_mean_reward': guard_none_mean('always_forced_ticks_mean_reward'),
+    'once_randomly_forced_ticks_mean_reward': guard_none_mean('once_randomly_forced_ticks_mean_reward')
   })
 
   return df
@@ -78,7 +81,7 @@ def main():
   root_p = os.getcwd()
 
   cp_subdir_names = [
-    'plan_yes-hs_100-plan_len_8-rand_ticks_no-num_ticks_1-recurrence_gru-agent_chooses_ticks_no-ticks_take_time_no-20250320-102101'
+    'plan_yes-hs_100-plan_len_8-rand_ticks_no-num_ticks_1-recurrence_gru-agent_chooses_ticks_no-ticks_take_time_no-20250409-102003'
   ]
 
   for si, cp_subdir_name in enumerate(cp_subdir_names):

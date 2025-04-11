@@ -1,6 +1,7 @@
 from model import AgentModel
 from typing import Dict, List
 import numpy as np
+import torch
 
 # hacky debug command. insert `exec(DBG)` into some scope to step into a REPL console at that point.
 DBG = 'import code; __ctx001__ = globals().copy(); __ctx001__.update(locals()); code.interact(local=__ctx001__);'
@@ -23,3 +24,21 @@ def split_array_indices(M: int, N: int) -> List[np.ndarray[int]]:
   else:
     # Not enough elements to form N subsets; return one-element subsets
     return [np.array(range(i, i+1)) for i in range(M)]
+  
+def filter_dict(d: Dict, ks: List[str]) -> Dict:
+  r = {}
+  for k in d.keys():
+    if k in ks:
+      r[k] = d[k]
+  return r
+  
+def dataclass_to_dict(res, sel: List[str]=None):
+  ks = dir(res)
+  r = {}
+  for k in ks:
+    if sel is not None and k not in sel: continue
+    if not k[0] == '_':
+      v = getattr(res, k)
+      if isinstance(v, torch.Tensor): v = v.detach().cpu().numpy()
+      r[k] = v
+  return r
