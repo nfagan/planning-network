@@ -1,6 +1,7 @@
 import sys; sys.path.append('..')
 import eval
 import env
+from environment import MazeEnvironment
 from evaluate import exploit_reward_state_prediction_accuracy_from_episode_result
 from model import AgentModel
 from debug_utility import put_params
@@ -11,10 +12,12 @@ import numpy as np
 import os
 from itertools import product
 from typing import List
+import dataclasses
 from dataclasses import dataclass
 from multiprocessing import Process
 
 NUM_PROCESSES = 5
+# NUM_PROCESSES = 0
 
 @dataclass
 class Uniform:
@@ -23,7 +26,7 @@ class Uniform:
   do_save = True
   meta: eval.Meta
   ep_p: eval.EpisodeParams
-  mazes: List[env.Arena]
+  environ: MazeEnvironment
   hiddens: int
 
 def compute_vf_error(rews: np.ndarray, vs: np.ndarray):
@@ -37,18 +40,29 @@ def eval_one(uniform: Uniform, model: AgentModel, fname: str):
   cp = loadmat(cp_p)
   put_params(model, cp)
 
-  res = eval.run_episode(uniform.meta, model, uniform.mazes, params=uniform.ep_p)
-  resd = dataclass_to_dict(res)
+  res = eval.run_episode(uniform.meta, model, uniform.environ, params=uniform.ep_p)
 
-  rews = resd['rewards']
-  resd['vf_error'] = np.mean(compute_vf_error(rews, resd['v']), axis=1)
-  resd['exploit_reward_prediction_acc'] = exploit_reward_state_prediction_accuracy_from_episode_result(res)
+  ep_p_no_rollouts = dataclasses.replace(uniform.ep_p, disable_rollouts=True)
+  res_no_rollouts = eval.run_episode(uniform.meta, model, uniform.environ, params=ep_p_no_rollouts)
+
+  variants = [res, res_no_rollouts]
+  variant_info = [{'rollouts_enabled': True}, {'rollouts_enabled': False}]
+  save_res = {'data': []}
+
+  for i, res in enumerate(variants):
+    resd = dataclass_to_dict(res)
+    resd['vf_error'] = np.mean(compute_vf_error(resd['rewards'], resd['v']), axis=1)
+    resd['exploit_reward_prediction_acc'] = exploit_reward_state_prediction_accuracy_from_episode_result(res)
+    resd['variant_info'] = variant_info[i]
+    keys = ['p_plan', 'mean_total_reward', 'vf_error',
+            'state_prediction_acc', 'reward_prediction_acc', 'exploit_reward_prediction_acc',
+            'variant_info']
+    resd = filter_dict(resd, keys)
+    save_res['data'].append(resd)
   
   if uniform.do_save:
     dst_p = os.path.join(uniform.rep_dst_p, f'replicate-{fname}')
-    keys = ['p_plan', 'mean_total_reward', 'vf_error', 
-            'state_prediction_acc', 'reward_prediction_acc', 'exploit_reward_prediction_acc']
-    savemat(dst_p, filter_dict(resd, keys))
+    savemat(dst_p, save_res)
 
 def eval_loop(uniform: Uniform, its: List):
   model = eval.build_model(
@@ -78,10 +92,13 @@ if __name__ == '__main__':
     ticks_take_time=False)
 
   fixed_mazes = env.build_fixed_maze_arenas(arena_len, num_episodes)
+  environ = MazeEnvironment(
+    mazes=fixed_mazes, num_states=meta.num_states, 
+    planning_action=meta.planning_action, device=meta.device)
 
   for hid in hiddens:
     its = np.array([*product(seeds, epochs)], dtype=object)
-    un = Uniform(meta=meta, ep_p=ep_p, mazes=fixed_mazes, hiddens=hid)
+    un = Uniform(meta=meta, ep_p=ep_p, environ=environ, hiddens=hid)
 
     if NUM_PROCESSES <= 0:
       eval_loop(un, its)

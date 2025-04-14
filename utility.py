@@ -6,6 +6,16 @@ import torch
 # hacky debug command. insert `exec(DBG)` into some scope to step into a REPL console at that point.
 DBG = 'import code; __ctx001__ = globals().copy(); __ctx001__.update(locals()); code.interact(local=__ctx001__);'
 
+_DETERMINISTIC = False
+
+def _set_deterministic(determ: bool):
+  global _DETERMINISTIC
+  _DETERMINISTIC = determ
+
+def _is_deterministic() -> bool:
+  global _DETERMINISTIC
+  return _DETERMINISTIC
+
 def instantiate_model_from_checkpoint(sd: Dict[str, any]) -> AgentModel:
   mdl = AgentModel.from_ctor_params(sd['params'])
   mdl.load_state_dict(sd['state'])
