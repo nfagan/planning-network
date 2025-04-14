@@ -416,11 +416,6 @@ def teleport_from_reward(s: torch.Tensor, n: int, rew_loc: torch.Tensor):
     i = s == rew_loc
   return s
 
-def time_points_for_randomized_ticks(T: float, concrete_action_time: float, batch_size: int):
-  max_num_ticks = int(T / concrete_action_time)
-  num_ticks = torch.randint(0, max_num_ticks, (batch_size,)).type(torch.float32)
-  return num_ticks * concrete_action_time
-
 def run_episode(
     meta: Meta, model: AgentModel, mazes: List[env.Arena], 
     params: EpisodeParams = EpisodeParams()) -> EpisodeResult:
@@ -448,10 +443,6 @@ def run_episode(
   prev_rewards = torch.zeros((batch_size, 1)).to(meta.device)
   time = torch.ones((batch_size, 1)).to(meta.device)  # @NOTE: see initializations.jl
   h_rnn = model.rnn.make_h0(batch_size, meta.device)
-
-  rand_tick_ts = time_points_for_randomized_ticks(
-    meta.T, meta.concrete_action_time, batch_size).to(meta.device)
-  performed_rand_ticks = torch.zeros((batch_size,), dtype=torch.bool, device=meta.device)
 
   # phases
   explore_phase_len = torch.ones((batch_size,), dtype=torch.long, device=meta.device) * -1
@@ -493,49 +484,8 @@ def run_episode(
     x[~is_active.squeeze(1), :] = 0.
     xs.append(x)
     
-    """
-    (begin) determine the number of ticks of recurrent processing to perform
-    """
+    # number of ticks of recurrent processing to perform
     num_ticks_per_step = torch.ones((batch_size,), dtype=torch.long).to(meta.device)
-
-    if params.num_ticks_per_step_applies == EpisodeParams.NUM_TICKS_ONCE_RANDOMLY:
-      candidates_for_ticks = (t >= rand_tick_ts) & torch.logical_not(performed_rand_ticks)
-      num_ticks_per_step[candidates_for_ticks] = \
-        num_ticks_per_step[candidates_for_ticks] * params.num_ticks_per_step
-      performed_rand_ticks[candidates_for_ticks] = True
-
-    elif params.num_ticks_per_step_applies == EpisodeParams.NUM_TICKS_EXPLORE_ONLY:
-      # only use `params.num_ticks_per_step` ticks during the explore phase.
-      num_ticks_per_step[torch.logical_not(is_exploit)] *= params.num_ticks_per_step
-
-    elif params.num_ticks_per_step_applies == EpisodeParams.NUM_TICKS_EXPLOIT_ONLY:
-      if t > 0:
-        # first_exploit is computed later (for the t+1 th time step), so only valid when t > 0
-        if False:
-          # only use `params.num_ticks_per_step` ticks at the start of the exploit phase.
-          num_ticks_per_step[first_exploit] = params.num_ticks_per_step
-        elif False:
-          # use `params.num_ticks_per_step` ticks throughout the exploit phase.
-          num_ticks_per_step[is_exploit] = params.num_ticks_per_step
-        elif True:
-          # use `params.num_ticks_per_step` ticks throughout the exploit phase, but only for the 
-          # same number of steps as the explore phase.
-          explore_lens = explore_phase_len[is_exploit]; assert torch.all(explore_lens >= 0)
-          t_off = t - explore_lens; assert torch.all(t_off >= 0)
-          permit_ticks = torch.argwhere(is_exploit).squeeze(1)[t_off < explore_lens]
-          num_ticks_per_step[permit_ticks] *= params.num_ticks_per_step
-        
-    else:
-      # no condition on when `num_ticks_per_step` applies
-      if params.num_ticks_per_step_is_randomized:
-        # use up to `params.num_ticks_per_step` ticks
-        num_ticks_per_step[:] = torch.randint(1, params.num_ticks_per_step, (batch_size,))
-      else:
-        # always use `params.num_ticks_per_step` ticks
-        num_ticks_per_step = num_ticks_per_step * params.num_ticks_per_step
-    """
-    (end) determine the number of ticks of recurrent processing to perform
-    """
 
     """
     (begin) step the environment
