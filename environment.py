@@ -9,9 +9,7 @@ _DEBUG_START_STATE = 2
 _DEBUG_REWARD_LOC = 8
 
 class Environment(object):
-  def __init__(self):
-    pass
-
+  def __init__(self): pass
   def initialize(self): raise NotImplementedError
   def act(self, s: torch.Tensor, a1: torch.Tensor): raise NotImplementedError
   def get_obs(self): raise NotImplementedError

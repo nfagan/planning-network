@@ -1,11 +1,19 @@
 import sys; sys.path.append('..')
 from debug_utility import put_params, arenas_from_kris_walls
 import eval
-from utility import dataclass_to_dict
+import env
+from utility import dataclass_to_dict, _set_deterministic
+from environment import MazeEnvironment
 import torch
 from scipy.io import loadmat, savemat
 import numpy as np
 import builtins
+from typing import List
+
+def create_maze_environment(meta: eval.Meta, mazes: List[env.Arena]):
+  return MazeEnvironment(
+    mazes=mazes, num_states=meta.num_states, 
+    planning_action=meta.planning_action, device=meta.device)
 
 def grad_keys():
   def keys():
@@ -39,7 +47,7 @@ def get_grads(mdl):
   return res
 
 def main():
-  eval._set_deterministic(True)
+  _set_deterministic(True)
 
   kris_cp = '/Users/nick/source/mattarlab/planning_code/computational_model/dump_models/gradients_batch_1-dst.mat'
   kris_walls_cp = '/Users/nick/source/mattarlab/planning_code/computational_model/dump_models/train-walls-dst.mat'
@@ -63,13 +71,14 @@ def main():
 
   kris_walls = loadmat(kris_walls_cp)['walls']
   mazes = arenas_from_kris_walls(kris_walls, s)
+  environ = create_maze_environment(meta, mazes)
 
   train_params = [*filter(lambda p: p.requires_grad, model.parameters())]
   print('Num trainable params: ', len(train_params))
 
   optim = torch.optim.Adam(lr=1e-3, params=train_params)
 
-  res = eval.run_episode(meta, model, mazes, params=ep_p)
+  res = eval.run_episode(meta, model, environ, params=ep_p)
   loss = res.loss
   optim.zero_grad()
   loss.backward()

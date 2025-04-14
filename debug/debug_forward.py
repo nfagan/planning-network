@@ -5,6 +5,7 @@ import env
 from utility import dataclass_to_dict
 import torch
 from dataclasses import asdict
+from debug_utility import put_params
 # import bson
 from scipy.io import loadmat, savemat
 
@@ -56,9 +57,7 @@ def main():
   kris_walls = loadmat(kris_walls_cp)['walls']
   mazes = arenas_from_kris_walls(kris_walls, s)
   kris_mdl_res = loadmat(kris_mdl_res_cp)
-  put_rnn(model.rnn, kris_cp)
-  put_pred(model.prediction, kris_cp)
-  put_policy(model.policy, kris_cp)
+  put_params(model, kris_cp)
   """
   """
 
@@ -68,7 +67,7 @@ def main():
   bs = h0.shape[0]
   nt = torch.ones((bs,), dtype=torch.long)
   my_outs = eval.forward_agent_model(
-    meta=meta, model=model, x=x0, h_rnn=h0, num_ticks=nt, greedy_actions=True)
+    meta=meta, model=model, x=x0, h_rnn=h0, num_ticks=nt, greedy_actions=True, disable_rollouts=False)
   mh1 = my_outs[0]
   abs_ds = (mh1 - h1).abs()
   max_delta = abs_ds.max()
@@ -83,7 +82,6 @@ def main():
   loss = res.loss
   optim.zero_grad()
   loss.backward()
-  import pdb; pdb.set_trace()
 
   resd = dataclass_to_dict(res)
   if False: savemat(dst_p, resd)

@@ -41,6 +41,9 @@ def filter_dict(d: Dict, ks: List[str]) -> Dict:
     if k in ks:
       r[k] = d[k]
   return r
+
+def tensor_to_ndarray(x):
+  return x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else x
   
 def dataclass_to_dict(res, sel: List[str]=None):
   ks = dir(res)

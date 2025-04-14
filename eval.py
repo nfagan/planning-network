@@ -3,13 +3,20 @@ from utility import DBG, _is_deterministic
 from environment import Environment
 import torch
 import torch.nn.functional as F
-from dataclasses import dataclass
-from typing import List
+from dataclasses import dataclass, field
+from typing import List, Dict
 from time import time as time_fn
 
 # ----------------------------------------------------------------------------
 
 _NO_ACTION = -1
+
+class EpisodeIntervention(object):
+  def __init__(self): pass
+  def initialize(self, environ: Environment): pass
+  def begin_step(self): pass
+  def end_step(self, *args): pass
+  def transform_input(self, x: torch.Tensor): return x
 
 @dataclass
 class EpisodeResult:
@@ -31,6 +38,7 @@ class EpisodeResult:
   p_plan: float
   state_prediction_acc: float
   reward_prediction_acc: float
+  intervention_results: List[Dict]
 
 @dataclass
 class EpisodeParams:
@@ -47,6 +55,7 @@ class EpisodeParams:
   force_rollouts_at_start_of_exploit_phase: bool = False
   sample_actions_greedily: bool = False
   verbose: int = 0
+  interventions: List[EpisodeIntervention] = field(default_factory=list)
 
 @dataclass
 class Meta:
@@ -222,8 +231,7 @@ def forward_agent_model(
   def _policy_subset(log_pi_v): return log_pi_v[:, :meta.num_actions]
   def _v_subset(log_pi_v): return log_pi_v[:, meta.num_actions]
 
-  max_num_ticks = torch.max(num_ticks)
-
+  max_num_ticks = 1 if num_ticks is None else torch.max(num_ticks)
   for i in range(max_num_ticks):
     if i == 0:
       h_rnn, ytemp = model.rnn(x, h_rnn)
@@ -380,6 +388,8 @@ def run_episode(
   time = torch.ones((batch_size, 1)).to(meta.device)  # @NOTE: see initializations.jl
   h_rnn = model.rnn.make_h0(batch_size, meta.device)
 
+  for intervention in params.interventions: intervention.initialize(environ)
+
   actions = []
   s0s = []  # states at step t
   s1s = []  # states at step t+1
@@ -392,11 +402,15 @@ def run_episode(
   pred_rewards = []
   actives = []
   chosen_ticks = []
+  intervention_results = []
 
   t = 0
   # T_thresh = meta.T
   T_thresh = meta.T + 1.0 - 1e-2
   while torch.any(time < T_thresh):
+    # begin intervention
+    for intervention in params.interventions: intervention.begin_step()
+
     # steps that haven't yet exceeded the time limit
     is_active = time < T_thresh
     hs.append(h_rnn)
@@ -410,6 +424,9 @@ def run_episode(
       meta=meta, environ=environ, prev_ahot=one_hot_actions(a, meta.num_actions), 
       prev_rewards=prev_rewards, shot=F.one_hot(s, meta.num_states), 
       time=time, plan_input=plan_input)
+    
+    # intervene on inputs
+    for intervention in params.interventions: x = intervention.transform_input(x)
     
     # mask out finished episodes
     x[~is_active.squeeze(1), :] = 0.
@@ -469,6 +486,11 @@ def run_episode(
     if meta.ticks_take_time: 
       dt += ((chosen_num_ticks - 1.) * meta.planning_action_time).view(dt.shape)
 
+    intervene_result = []
+    for intervention in params.interventions: 
+      intervene_result.append(intervention.end_step(
+        meta, environ, model, h_rnn, pi, pred_output, s, s1, a, a1, prev_rewards, rew, time))
+
     # push results
     rews.append(rew)
     log_pis.append(log_pi)
@@ -481,6 +503,7 @@ def run_episode(
     pred_rewards.append(pred_reward)
     actives.append(is_active)
     chosen_ticks.append(chosen_num_ticks)
+    intervention_results.append(intervene_result)
     
     # prepare next iteration
     # if meta.agent_chooses_ticks_enabled: rew[pi] = prev_rewards[pi] # carry forward previous rewards
@@ -584,4 +607,5 @@ def run_episode(
     reward_prediction_acc=reward_pred_acc.item(),
     predicted_states=to_pred_state(pred_states), 
     predicted_rewards=to_pred_state(pred_rewards),
-    reward_locs=rew_loc, states0=s0s, states1=s1s, xs=xs, hs=hs, chosen_num_ticks=chosen_ticks)
+    reward_locs=rew_loc, states0=s0s, states1=s1s, xs=xs, hs=hs, chosen_num_ticks=chosen_ticks,
+    intervention_results=intervention_results)
