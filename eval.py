@@ -48,6 +48,7 @@ class EpisodeParams:
   NUM_TICKS_APPLIES_ALWAYS = 4
 
   num_rollouts_per_planning_action: int = 1
+  disable_rollouts: bool = False
   num_ticks_per_step: int = 1
   num_ticks_per_step_applies: int = 0
   num_ticks_per_step_is_randomized: bool = False
@@ -222,7 +223,7 @@ def prior_loss(meta: Meta, log_pi: torch.Tensor, active: torch.Tensor):
 
 def forward_agent_model(
     *, meta: Meta, model: AgentModel, x: torch.Tensor, h_rnn: torch.Tensor, 
-    num_ticks: torch.Tensor, greedy_actions: bool):
+    num_ticks: torch.Tensor, greedy_actions: bool, disable_rollouts: bool):
   """
   a2c.jl/forward_modular
   """
@@ -241,6 +242,7 @@ def forward_agent_model(
   log_pi_v = model.policy(ytemp)
   log_pi = _policy_subset(log_pi_v)
   v = _v_subset(log_pi_v)
+  if disable_rollouts: log_pi = log_pi[:, :min(meta.num_actions, meta.num_concrete_actions)]
   ps = torch.softmax(log_pi, dim=1)
   a = sample_actions(ps, greedy_actions)
   ah = one_hot_actions(a, meta.num_actions)
@@ -541,7 +543,8 @@ def run_episode(
     # perform a step of recurrent processing
     h_rnn, log_pi, v, pred_output, a1, chosen_num_ticks = forward_agent_model(
       meta=meta, model=model, x=x, h_rnn=h_rnn, 
-      num_ticks=num_ticks_per_step, greedy_actions=params.sample_actions_greedily)
+      num_ticks=num_ticks_per_step, 
+      greedy_actions=params.sample_actions_greedily, disable_rollouts=params.disable_rollouts)
     pred_state, pred_reward = decompose_prediction_output(meta, pred_output)
 
     # update the agent's state, when the chosen action is concrete.
